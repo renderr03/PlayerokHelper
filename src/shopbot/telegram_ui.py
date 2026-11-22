@@ -317,6 +317,7 @@ class TelegramUI:
                 "health_check_failed": "Новая версия не подтвердила успешный запуск.",
                 "worker_still_running": "Другой процесс использует базу магазина.",
                 "project_changed_during_update": "Файлы проекта изменились во время подготовки.",
+                "data_directory_changed": "Каталог базы изменён. Повторите обычную установку от прежнего пользователя сервера.",
             }.get(item.get("reason"))
             if reason:
                 lines.append(reason)

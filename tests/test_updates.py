@@ -1,5 +1,6 @@
 import json
 import os
+import shlex
 import sqlite3
 import subprocess
 import sys
@@ -253,6 +254,10 @@ def prepared_worker(tmp_path):
     stage.mkdir(parents=True)
     (stage / "new-env").write_text("new")
     (directory / ".venv").mkdir()
+    (directory / ".venv/bin").mkdir()
+    interpreter = directory / ".venv/bin/python"
+    interpreter.write_text("#!/bin/sh\nexec " + shlex.quote(sys.executable) + ' "$@"\n')
+    interpreter.chmod(0o755)
     (directory / ".venv/old-env").write_text("old")
     (directory / ".env").write_text("TOKEN=keep-this-key\n")
     data = directory / "data"
@@ -385,3 +390,12 @@ def test_pinned_tag_change_is_rejected_before_build(prepared_worker, monkeypatch
     with pytest.raises(updater_worker.UpdateError, match="release_tag_changed"):
         worker.prepare()
     assert git(worker.directory, "rev-parse", "HEAD") == old_sha
+
+
+def test_changed_data_directory_is_rejected_before_any_switch(prepared_worker):
+    worker, _, old_sha = prepared_worker
+    (worker.directory / ".env").write_text("DATA_DIR=another-database\n")
+    with pytest.raises(updater_worker.UpdateError, match="data_directory_changed"):
+        worker.prepare()
+    assert worker.git("rev-parse", "HEAD") == old_sha
+    assert not (worker.folder / "maintenance.json").exists()

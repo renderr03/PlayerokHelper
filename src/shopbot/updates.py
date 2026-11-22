@@ -143,6 +143,7 @@ class Updates:
         ):
             raise ValueError("Предложение устарело или обновление уже запущено. Проверьте версию снова.")
         request = {"nonce": nonce, "tag": offer["tag"], "sha": offer["sha"], "created_at": now()}
+        request["data_dir"] = str(self.db.path.parent.resolve())
         # Publish a complete file atomically. A hard link gives O_EXCL semantics.
         temporary = self.folder / ("request-" + nonce + ".tmp")
         atomic_write(temporary, json.dumps(request))

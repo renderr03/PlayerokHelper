@@ -128,6 +128,23 @@ class Worker:
     def prepare(self):
         request = self.request()
         self.clean()
+        # DATA_DIR is captured by the installed manager. Refuse a changed path
+        # rather than backing up one database and migrating another on restart.
+        if request.get("data_dir") and Path(request["data_dir"]) != self.data:
+            raise UpdateError("data_directory_changed")
+        configured_data = run(
+            [
+                str(self.directory / ".venv/bin/python"),
+                "-c",
+                "import sys;from pathlib import Path;from dotenv import dotenv_values;"
+                "root=Path(sys.argv[1]);settings=dotenv_values(root/'.env',interpolate=False);"
+                "path=Path(settings.get('DATA_DIR') or 'data');"
+                "print((path if path.is_absolute() else root/path).resolve())",
+                str(self.directory),
+            ]
+        )
+        if Path(configured_data) != self.data:
+            raise UpdateError("data_directory_changed")
         previous = self.current_version()
         if version(request["tag"]) <= version(previous):
             raise UpdateError("not_a_new_version")
