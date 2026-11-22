@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-labelledby="title desc">
+  <title id="title">PlayerokHelper</title>
+  <desc id="desc">Ваш магазин на Playerok. Управление в Telegram. Аренда KOSell, свой склад, автоответы.</desc>
+  <defs>
+    <linearGradient id="bg" x2="1" y2="1"><stop stop-color="#071019"/><stop offset="1" stop-color="#102936"/></linearGradient>
+    <radialGradient id="glow"><stop stop-color="#30cfa4" stop-opacity=".16"/><stop offset="1" stop-color="#30cfa4" stop-opacity="0"/></radialGradient>
+    <linearGradient id="accent"><stop stop-color="#52e3bd"/><stop offset="1" stop-color="#59bdff"/></linearGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M40 0H0V40" fill="none" stroke="#80b1c4" stroke-opacity=".07"/></pattern>
+  </defs>
+  <rect width="1280" height="640" rx="24" fill="url(#bg)"/>
+  <rect width="1280" height="640" rx="24" fill="url(#grid)"/>
+  <circle cx="1090" cy="260" r="400" fill="url(#glow)"/>
+  <g font-family="DejaVu Sans,Arial,sans-serif">
+    <g transform="translate(64 55)">
+      <rect width="44" height="44" rx="13" fill="url(#accent)"/>
+      <path d="M12 12h20v15H21l-7 6v-6h-2z" fill="#081a23"/>
+      <path d="M23 15l-5 7h5l-2 6 7-9h-5l2-4z" fill="#6ce9ce"/>
+      <text x="61" y="27" fill="#a5c3cf" font-size="13" letter-spacing="2.4">PLAYEROK · TELEGRAM · KOSELL</text>
+    </g>
+    <text x="64" y="194" fill="#f5fbff" font-size="63" font-weight="700" letter-spacing="-2.8">PlayerokHelper</text>
+    <rect x="67" y="221" width="65" height="4" rx="2" fill="url(#accent)"/>
+    <text x="64" y="279" fill="#f3f8fc" font-size="30" font-weight="600">Ваш магазин на Playerok.</text>
+    <text x="64" y="322" fill="#91aebd" font-size="30">Управление в Telegram.</text>
+    <text x="66" y="368" fill="#aec6d1" font-size="17">Аренда KOSell · Свой склад · Автоответы</text>
+    <g transform="translate(64 414)">
+      <rect width="627" height="112" rx="15" fill="#0b1823" stroke="#294552"/>
+      <circle cx="23" cy="21" r="3.5" fill="#4b6472"/><circle cx="37" cy="21" r="3.5" fill="#4b6472"/><circle cx="51" cy="21" r="3.5" fill="#4b6472"/>
+      <text x="75" y="26" fill="#7795a5" font-size="11" letter-spacing="1.4">УСТАНОВКА ОДНОЙ КОМАНДОЙ</text>
+      <text x="23" y="60" fill="#63e5be" font-family="DejaVu Sans Mono,monospace" font-size="19">$ curl …/install.sh | bash</text>
+      <text x="23" y="89" fill="#9cb6c3" font-size="13">Скрытый токен · ID администратора · Автозапуск</text>
+    </g>
+    <text x="66" y="585" fill="#718e9f" font-size="12" letter-spacing="1.5">LINUX + SYSTEMD</text>
+    <circle cx="221" cy="580" r="2" fill="#496674"/>
+    <text x="238" y="585" fill="#718e9f" font-size="12" letter-spacing="1.5">PYTHON 3.11+</text>
+    <circle cx="370" cy="580" r="2" fill="#496674"/>
+    <text x="387" y="585" fill="#718e9f" font-size="12" letter-spacing="1.5">НА ВАШЕМ СЕРВЕРЕ</text>
+    <g transform="translate(771 101)">
+      <rect x="10" y="13" width="434" height="430" rx="25" fill="#000" opacity=".2"/>
+      <rect width="434" height="430" rx="25" fill="#10212f" stroke="#355360"/>
+      <path d="M25 0h384a25 25 0 0 1 25 25v35H0V25A25 25 0 0 1 25 0" fill="#172f3e"/>
+      <circle cx="30" cy="31" r="7" fill="#56d5bb"/>
+      <text x="49" y="36" fill="#b4cedb" font-size="12" letter-spacing="1.5">ПАНЕЛЬ В TELEGRAM</text>
+      <circle cx="393" cy="30" r="2" fill="#7794a3"/><circle cx="401" cy="30" r="2" fill="#7794a3"/><circle cx="409" cy="30" r="2" fill="#7794a3"/>
+      <text x="27" y="103" fill="#eff8fc" font-size="24" font-weight="700">PlayerokHelper</text>
+      <text x="27" y="131" fill="#7f9fae" font-size="13">Выберите действие</text>
+      <g fill="#1b3544" stroke="#2b4a5a">
+        <rect x="25" y="156" width="384" height="43" rx="10"/>
+        <rect x="25" y="207" width="384" height="43" rx="10"/>
+        <rect x="25" y="258" width="384" height="43" rx="10"/>
+        <rect x="25" y="309" width="384" height="43" rx="10"/>
+      </g>
+      <g fill="#a4d4dd" font-size="16">
+        <path d="M48 167l3 6 7 1-5 5 1 7-6-3-6 3 1-7-5-5 7-1z" fill="#63e5be"/>
+        <text x="76" y="183">Автонастройки</text>
+        <path d="M40 238v-10m8 10v-17m8 17v-24" stroke="#63bce9" stroke-width="3" stroke-linecap="round"/>
+        <text x="76" y="234">Аналитика</text>
+        <path d="M50 267l-10 15h9l-3 11 13-17h-9z" fill="#63e5be"/>
+        <text x="76" y="285">Плагины и выдача</text>
+        <path d="M40 324h18v14H40zM44 320v4m10-4v4m-9 7h8" stroke="#63bce9" stroke-width="2" fill="none"/>
+        <text x="76" y="336">Управление аккаунтом</text>
+      </g>
+      <path d="M27 375h380" stroke="#294653"/>
+      <text x="28" y="402" fill="#7f9fae" font-size="11">ЗАКАЗЫ · СООБЩЕНИЯ · ОТЧЁТЫ</text>
+    </g>
+  </g>
+</svg>

@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="680" viewBox="0 0 1200 680" role="img" aria-labelledby="title desc">
+  <title id="title">Меню PlayerokHelper</title>
+  <desc id="desc">Схематичная иллюстрация Telegram-меню и трёх этапов настройки. Не скриншот реального магазина.</desc>
+  <defs>
+    <linearGradient id="bg" x2="1" y2="1"><stop stop-color="#0a1621"/><stop offset="1" stop-color="#102835"/></linearGradient>
+    <linearGradient id="accent"><stop stop-color="#50dfb5"/><stop offset="1" stop-color="#60b9ef"/></linearGradient>
+  </defs>
+  <rect width="1200" height="680" rx="22" fill="url(#bg)"/>
+  <g font-family="DejaVu Sans,Arial,sans-serif">
+    <text x="55" y="57" font-size="12" letter-spacing="2" fill="#69d4bd">ПАНЕЛЬ ПРОДАВЦА</text>
+    <text x="55" y="104" font-size="30" font-weight="700" fill="#f0f7fb">Всё начинается с /start</text>
+    <text x="56" y="134" font-size="15" fill="#829faf">Настройки, заказы и сообщения — в привычном чате.</text>
+    <g transform="translate(55 173)">
+      <rect width="500" height="448" rx="20" fill="#112331" stroke="#305060"/>
+      <rect x="21" y="20" width="458" height="90" rx="13" fill="#1d3b48"/>
+      <text x="40" y="51" fill="#e7f9f9" font-size="19" font-weight="700">PlayerokHelper</text>
+      <text x="40" y="78" fill="#b2ced8" font-size="14">Добро пожаловать! Выберите действие.</text>
+      <g fill="#1a3443" stroke="#2d4b5a">
+        <rect x="21" y="126" width="458" height="43" rx="9"/>
+        <rect x="21" y="177" width="458" height="43" rx="9"/>
+        <rect x="21" y="228" width="458" height="43" rx="9"/>
+        <rect x="21" y="279" width="458" height="43" rx="9"/>
+        <rect x="21" y="330" width="458" height="43" rx="9"/>
+        <rect x="21" y="381" width="458" height="43" rx="9"/>
+      </g>
+      <g font-size="15" fill="#d7eaf2">
+        <text x="45" y="154" fill="#66e1bf">01</text><text x="91" y="154">Автонастройки</text>
+        <text x="45" y="205" fill="#66e1bf">02</text><text x="91" y="205">Профиль</text>
+        <text x="45" y="256" fill="#66e1bf">03</text><text x="91" y="256">Аналитика</text>
+        <text x="45" y="307" fill="#66e1bf">04</text><text x="91" y="307">Плагины</text>
+        <text x="45" y="358" fill="#66e1bf">05</text><text x="91" y="358">Управление аккаунтом</text>
+        <text x="45" y="409" fill="#66e1bf">06</text><text x="91" y="409">Помощь</text>
+      </g>
+    </g>
+    <g transform="translate(606 184)">
+      <text y="5" font-size="12" letter-spacing="1.5" fill="#799caa">ОТ УСТАНОВКИ К РАБОТЕ</text>
+      <path d="M20 64v256" stroke="#30505d" stroke-width="2" stroke-dasharray="4 7"/>
+      <circle cx="20" cy="64" r="20" fill="url(#accent)"/>
+      <text x="15" y="70" fill="#0b2430" font-size="17" font-weight="700">1</text>
+      <text x="58" y="58" fill="#e8f4f9" font-size="20" font-weight="700">Установите бота</text>
+      <text x="58" y="87" fill="#92b0bf" font-size="14">Одна команда, токен и ID администратора.</text>
+      <text x="58" y="111" fill="#92b0bf" font-size="14">Автозапуск на вашем Linux-сервере.</text>
+      <circle cx="20" cy="192" r="20" fill="url(#accent)"/>
+      <text x="15" y="198" fill="#0b2430" font-size="17" font-weight="700">2</text>
+      <text x="58" y="186" fill="#e8f4f9" font-size="20" font-weight="700">Подключите магазин</text>
+      <text x="58" y="215" fill="#92b0bf" font-size="14">Playerok, KOSell или собственный склад.</text>
+      <text x="58" y="239" fill="#92b0bf" font-size="14">Привяжите лоты и проверьте интеграцию.</text>
+      <circle cx="20" cy="320" r="20" fill="url(#accent)"/>
+      <text x="15" y="326" fill="#0b2430" font-size="17" font-weight="700">3</text>
+      <text x="58" y="314" fill="#e8f4f9" font-size="20" font-weight="700">Настройте правила</text>
+      <text x="58" y="343" fill="#92b0bf" font-size="14">Выдача, ответы и лимиты расходов.</text>
+      <text x="58" y="367" fill="#92b0bf" font-size="14">Заказы и отчёты — в Telegram.</text>
+      <rect x="0" y="412" width="493" height="36" rx="9" fill="#173645"/>
+      <text x="15" y="435" fill="#96bbcc" font-size="11">СХЕМА ИНТЕРФЕЙСА · БЕЗ ДАННЫХ РЕАЛЬНОГО МАГАЗИНА</text>
+    </g>
+  </g>
+</svg>
