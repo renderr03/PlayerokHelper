@@ -154,7 +154,7 @@ def configure(directory: Path, terminal: Console, *, connections=False):
     atomic_write(path, env_text(original, updates))
     terminal.write(
         "Настройки сохранены в .env (доступ только владельцу). Ключ шифрования сохранён.\n"
-        "Запуск: bash start.sh\n"
+        "Ручной запуск без systemd-службы: bash start.sh\n"
         "Подключить KOSell и Playerok: .venv/bin/playerokhelper setup --connections\n"
         "Перед автоматизацией выполните doctor и проверку скрытия тестового лота по README."
     )

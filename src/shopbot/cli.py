@@ -102,6 +102,10 @@ def main():
     setup_parser.add_argument(
         "--connections", action="store_true", help="Также настроить KOSell и сессию Playerok"
     )
+    service_parser = sub.add_parser(
+        "install-service", help="Создать systemd-службу, включить автозапуск и запустить бота"
+    )
+    service_parser.add_argument("--directory", type=Path, default=Path.cwd())
     verify = sub.add_parser(
         "verify-visibility", help="Explicit live test: hide and restore your test listing"
     )
@@ -124,6 +128,16 @@ def main():
             parser.exit(
                 2, "Настройки не сохранены: проверьте консоль, права файлов и существующий ключ шифрования.\n"
             )
+        return
+    if args.command == "install-service":
+        from .service import ServiceSetupError, install_service
+
+        try:
+            install_service(args.directory)
+        except ServiceSetupError as exc:
+            parser.exit(2, str(exc) + "\n")
+        except (OSError, ValueError):
+            parser.exit(2, "Не удалось установить службу: проверьте каталог проекта и права файлов.\n")
         return
     config = Config.load()
     logging.basicConfig(level=logging.ERROR, format="%(name)s: %(message)s")

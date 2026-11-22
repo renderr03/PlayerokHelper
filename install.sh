@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 umask 077
+if [[ "${SHOPBOT_AUTOSTART:-1}" != "0" && "${SHOPBOT_AUTOSTART:-1}" != "1" ]]; then
+    echo "SHOPBOT_AUTOSTART должен быть 1 (по умолчанию) или 0." >&2
+    exit 1
+fi
 
 SHOPBOT_REPOSITORY="https://github.com/renderr03/PlayerokHelper.git"
 SHOPBOT_SCRIPT_PATH="${BASH_SOURCE[0]:-}"
@@ -58,4 +62,12 @@ fi
 .venv/bin/python -m pip install --disable-pip-version-check -c constraints.txt .
 .venv/bin/playerokhelper setup --directory "$SHOPBOT_TARGET"
 echo "PlayerokHelper установлен в: $SHOPBOT_TARGET"
-echo "Запуск: bash \"$SHOPBOT_TARGET/start.sh\""
+if [[ "${SHOPBOT_AUTOSTART:-1}" == "1" ]]; then
+    .venv/bin/playerokhelper install-service --directory "$SHOPBOT_TARGET"
+elif [[ "${SHOPBOT_AUTOSTART:-1}" == "0" ]]; then
+    echo "Автозапуск отключён через SHOPBOT_AUTOSTART=0."
+    echo "Запуск вручную: bash \"$SHOPBOT_TARGET/start.sh\""
+else
+    echo "SHOPBOT_AUTOSTART должен быть 1 (по умолчанию) или 0." >&2
+    exit 1
+fi
