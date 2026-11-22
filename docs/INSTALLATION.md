@@ -22,6 +22,8 @@ Telegram-панель и автоматизация одного магазин�
 
 На Linux с работающим systemd, Python 3.11+, `venv`, `git` и `curl`:
 
+**Арендовать сервер рекомендую [здесь — ExpressHost](https://t.me/ExpressHost_Bot?start=ref_ASqRPBNS).** Реферальная ссылка автора. Для установки нужен сервер с указанными выше зависимостями и доступом root или sudo.
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/renderr03/PlayerokHelper/main/install.sh | bash
 ```

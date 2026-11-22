@@ -12,6 +12,8 @@
 
 Код и инструкция: https://github.com/renderr03/PlayerokHelper
 
+Арендовать сервер рекомендую [здесь — ExpressHost](https://t.me/ExpressHost_Bot?start=ref_ASqRPBNS) (реферальная ссылка автора).
+
 Поддержать автора: https://boosty.to/renderr03/donate
 
 ## Развёрнутый пост
@@ -33,6 +35,8 @@ PlayerokHelper — помощник, который устанавливаетс
 Установщик спросит токен Telegram-бота и ID администратора прямо в консоли. После установки подключите Playerok и KOSell, привяжите лоты и пройдите проверку интеграции на своём магазине.
 
 Репозиторий и установка: https://github.com/renderr03/PlayerokHelper
+
+Арендовать сервер рекомендую [здесь — ExpressHost](https://t.me/ExpressHost_Bot?start=ref_ASqRPBNS) (реферальная ссылка автора).
 
 Поддержать разработку на Boosty: https://boosty.to/renderr03/donate
 

@@ -59,6 +59,8 @@
 
 Нужен Linux с systemd, Python 3.11+, `venv`, `git`, `curl` и доступ root или sudo. Подойдут Ubuntu 24.04 и Debian 12 с установленными зависимостями.
 
+**Арендовать сервер рекомендую [здесь — ExpressHost](https://t.me/ExpressHost_Bot?start=ref_ASqRPBNS).** Реферальная ссылка автора. При выборе сервера проверьте соответствие требованиям выше.
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/renderr03/PlayerokHelper/main/install.sh | bash
 ```
