@@ -43,7 +43,7 @@ async def panel(app, tmp_path):
     engine, db, market, kosell = app
     session = CaptureSession()
     bot = Bot("123456789:fake_bot_token_for_tests_only", session=session)
-    ui = TelegramUI(bot, engine, [42], tmp_path)
+    ui = TelegramUI(bot, engine, [42], tmp_path, project_dir=tmp_path)
     dp = dispatcher(ui)
     counter = 0
 
@@ -233,3 +233,49 @@ async def test_extension_preview_selects_existing_rental_and_revalidates(panel):
     await send(callback=callback)
     assert "действующую аренду" in session.calls[-1].text
     assert ui.engine.kosell.extensions == 0
+
+
+async def test_updates_menu_confirmation_cancel_and_auth(panel):
+    import json
+
+    from shopbot import __version__
+
+    ui, session, send = panel
+    await send("/version", user=999)
+    assert not session.calls
+    await send("/version")
+    assert __version__ in session.calls[-1].text
+    folder = ui.updates.folder
+    folder.mkdir()
+    (folder / "enabled.json").write_text('{"protocol": 1}')
+    ui.db.set("update_release", {"tag": "v0.4.0", "sha": "b" * 40, "url": "", "body": "notes"})
+    await send(callback="updates:offer", user=999)
+    assert ui.db.get("update_offer") is None
+    await send(callback="updates:offer")
+    old_callback = session.calls[-1].reply_markup.inline_keyboard[0][0].callback_data
+    await send(callback="updates:home")
+    await send(callback=old_callback)
+    assert not (folder / "request.json").exists()
+    await send(callback="updates:offer")
+    callback = session.calls[-1].reply_markup.inline_keyboard[0][0].callback_data
+    assert len(callback.encode()) <= 64
+    await send(callback=callback)
+    assert json.loads((folder / "request.json").read_text())["sha"] == "b" * 40
+    await send(callback=callback)
+    assert "Предложение устарело" in session.calls[-1].text
+    await ui.send_admin("42", "release", purpose="update")
+    assert session.calls[-1].reply_markup.inline_keyboard[0][0].text == "⬆️ Обновить бота"
+
+
+async def test_maintenance_rejects_callbacks_and_messages(panel):
+    ui, session, send = panel
+    folder = ui.updates.folder
+    folder.mkdir()
+    (folder / "maintenance.json").write_text('{"nonce": "test"}')
+    before = ui.db.get("features")
+    await send(callback="feature:greeting")
+    assert ui.db.get("features") == before
+    assert isinstance(session.calls[-1], AnswerCallbackQuery)
+    await send("/bind")
+    assert "приостановлены" in session.calls[-1].text
+    assert not ui.db.all("SELECT * FROM bindings")

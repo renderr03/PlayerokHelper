@@ -22,6 +22,10 @@ else
         exit 1
     }
     if [[ -e "$SHOPBOT_TARGET" ]]; then
+        if [[ -e "$SHOPBOT_TARGET/.updates/request.json" || -e "$SHOPBOT_TARGET/.updates/maintenance.json" ]]; then
+            echo "Обновление из Telegram уже выполняется или требует восстановления. Проверьте службу обновлятора." >&2
+            exit 1
+        fi
         if [[ ! -d "$SHOPBOT_TARGET/.git" ]]; then
             echo "Папка $SHOPBOT_TARGET уже существует и не является клоном проекта. Выберите другую через SHOPBOT_INSTALL_DIR." >&2
             exit 1
@@ -53,6 +57,10 @@ command -v "$SHOPBOT_PYTHON" >/dev/null 2>&1 || {
 "$SHOPBOT_PYTHON" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else "Нужен Python 3.11+. Выберите его через SHOPBOT_PYTHON.")'
 
 cd -- "$SHOPBOT_TARGET"
+if [[ -e .updates/request.json || -e .updates/maintenance.json ]]; then
+    echo "Выполняется обновление из Telegram или требуется восстановление. Проверьте /version и службу обновлятора перед установкой." >&2
+    exit 1
+fi
 if [[ ! -x .venv/bin/python ]]; then
     "$SHOPBOT_PYTHON" -m venv .venv || {
         echo "Не удалось создать окружение. Для Ubuntu 24.04 / Debian 12 установите python3-venv." >&2

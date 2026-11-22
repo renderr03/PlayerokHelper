@@ -25,6 +25,7 @@ DEFAULTS = {
     "stock_low": 3,
     "rental_low": 2,
     "alerts_enabled": True,
+    "update_notifications": True,
     "features": {
         k: False
         for k in (
@@ -129,9 +130,11 @@ class Database:
             "INSERT INTO audit(event,reference,created_at) VALUES (?,?,?)", (event, reference, now())
         )
 
-    def notify(self, text: str, dedup: str, order_id=None):
+    def notify(self, text: str, dedup: str, order_id=None, *, purpose="message"):
         for admin in self.get("admins", []):
-            self.enqueue("telegram", str(admin), text, f"admin:{admin}:{dedup}", order_id=order_id)
+            self.enqueue(
+                "telegram", str(admin), text, f"admin:{admin}:{dedup}", order_id=order_id, purpose=purpose
+            )
 
     def enqueue(
         self,

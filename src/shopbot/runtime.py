@@ -5,10 +5,12 @@ import json
 import logging
 import os
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from aiogram import Bot
 from aiogram.types import ErrorEvent
 
+from . import __version__
 from .alerts import Alerts
 from .analytics import Analytics
 from .checks import connection_snapshot, needs_kosell
@@ -21,6 +23,8 @@ from .listings import Listings
 from .models import ServiceError, now
 from .playerok import Playerok
 from .telegram_ui import TelegramUI, dispatcher
+from .updater_worker import write
+from .updates import Updates, read_json
 
 
 class UnconfiguredPlayerok:
@@ -71,8 +75,18 @@ class Runtime:
         self.conversations = Conversations(engine)
         self.listings = Listings(engine)
         self.analytics = Analytics(db)
+        self.updates = Updates(db, getattr(config, "project_dir", None))
+        self.recovered = False
 
     async def cycle(self):
+        if self.updates.folder and (self.updates.folder / "maintenance.json").exists():
+            return
+        if not self.recovered:
+            self.engine.recover()
+            self.recovered = True
+        self.updates.consume_result()
+        if getattr(self.config, "updates_enabled", False):
+            await self.updates.check()
         if now() - self.db.get("last_readiness", 0) >= 60:
             await readiness(
                 self.db, self.engine.market, self.engine.kosell, needs_kosell=needs_kosell(self.db)
@@ -166,8 +180,7 @@ async def serve(config: Config):
     kosell = KOSell(config.kosell_url, config.kosell_key)
     bot = Bot(config.token)
     engine = Engine(db, market, kosell, config.timezone)
-    engine.recover()
-    ui = TelegramUI(bot, engine, config.admins, config.data_dir)
+    ui = TelegramUI(bot, engine, config.admins, config.data_dir, config.project_dir)
     dp = dispatcher(ui)
 
     async def handle_error(event: ErrorEvent):
@@ -176,17 +189,39 @@ async def serve(config: Config):
 
     dp.errors.register(handle_error)
     runtime = Runtime(config, db, engine, ui)
-    worker = asyncio.create_task(runtime.loop())
+    worker = health = None
     try:
+        await bot.get_me()
+        worker = asyncio.create_task(runtime.loop())
+        health = asyncio.create_task(health_loop(config.project_dir))
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
-        worker.cancel()
-        try:
-            await worker
-        except asyncio.CancelledError:
-            pass
+        for task in [worker, health]:
+            if task:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
         await market.close()
         await kosell.close()
         await bot.session.close()
         db.close()
         lock.close()
+
+
+async def health_loop(directory: Path):
+    folder = directory / ".updates"
+    while True:
+        marker = read_json(folder / "maintenance.json", {})
+        if isinstance(marker, dict) and marker.get("nonce"):
+            write(
+                folder / "health.json",
+                {
+                    "nonce": marker["nonce"],
+                    "pid": os.getpid(),
+                    "version": __version__,
+                    "at": now(),
+                },
+            )
+        await asyncio.sleep(5)

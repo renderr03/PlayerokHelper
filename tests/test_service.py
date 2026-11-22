@@ -20,6 +20,8 @@ def installation(tmp_path, monkeypatch):
     executable.chmod(0o755)
     configure(directory, FakeConsole([TOKEN, "42"]))
     monkeypatch.setattr(service, "UNIT_PATH", tmp_path / service.SERVICE_NAME)
+    monkeypatch.setattr(service, "UPDATE_HELPER_PATH", tmp_path / "libexec/updater.py")
+    monkeypatch.setattr(service, "UPDATE_CONFIG_PATH", tmp_path / "updater.json")
     monkeypatch.setattr(service, "check_platform", lambda: None)
     monkeypatch.setattr(service.os, "geteuid", lambda: 1000)
     monkeypatch.setattr(service.os, "getegid", lambda: 1000)
@@ -33,14 +35,19 @@ def test_service_is_enabled_started_and_checked_with_same_installation_user(inst
     def runner(args, **kwargs):
         calls.append(args)
         if "install" in args:
+            if "-d" in args:
+                Path(args[-1]).mkdir(parents=True, exist_ok=True)
+                return subprocess.CompletedProcess(args, 0, "", "")
             unit = Path(args[-2]).read_text()
             units.append(unit)
             Path(args[-1]).write_text(unit)
         return subprocess.CompletedProcess(args, 0, "", "")
 
     service.install_service(installation, runner=runner, output=messages.append)
-    assert [c[1:3] for c in calls[1:]] == [
+    assert [c[1:3] for c in calls if "systemctl" in c] == [
         ["systemctl", "daemon-reload"],
+        ["systemctl", "enable"],
+        ["systemctl", "is-active"],
         ["systemctl", "enable"],
         ["systemctl", "reset-failed"],
         ["systemctl", "restart"],
@@ -54,6 +61,10 @@ def test_service_is_enabled_started_and_checked_with_same_installation_user(inst
     assert TOKEN not in units[0] and TOKEN not in "\n".join(messages)
     assert "EnvironmentFile" not in units[0]
     assert "запущен" in messages[-1]
+    config = __import__("json").loads(service.UPDATE_CONFIG_PATH.read_text())
+    assert config["uid"] == 1000 and config["directory"] == str(installation)
+    assert TOKEN not in service.UPDATE_CONFIG_PATH.read_text()
+    assert (installation / ".updates/enabled.json").exists()
     before = (installation / ".env").read_bytes()
     service.install_service(installation, runner=runner, output=messages.append)
     assert (installation / ".env").read_bytes() == before
@@ -119,6 +130,31 @@ def test_systemd_accepts_generated_unit_syntax(installation):
     runtime.mkdir(mode=0o700)
     result = subprocess.run(
         ["systemd-analyze", "--user", "verify", str(path)],
+        env=dict(os.environ, XDG_RUNTIME_DIR=str(runtime)),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.skipif(not shutil.which("systemd-analyze"), reason="systemd-analyze is unavailable")
+def test_systemd_accepts_update_manager_and_path_units(installation):
+    paths = []
+    for name, text in zip(
+        ["playerokhelper-update.service", "playerokhelper-update.path"],
+        service.render_update_units(installation),
+        strict=True,
+    ):
+        path = installation.parent / name
+        path.write_text(text)
+        paths.append(str(path))
+        assert TOKEN not in text
+        if name.endswith(".service"):
+            assert 'ExecStart="/usr/bin/python3"' in text
+    runtime = installation.parent / "runtime"
+    runtime.mkdir(mode=0o700)
+    result = subprocess.run(
+        ["systemd-analyze", "--user", "verify", *paths],
         env=dict(os.environ, XDG_RUNTIME_DIR=str(runtime)),
         capture_output=True,
         text=True,

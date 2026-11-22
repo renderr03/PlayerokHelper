@@ -20,10 +20,12 @@ from aiogram.types import (
     Message,
 )
 
+from . import __version__
 from .analytics import Analytics
 from .checks import binding_fingerprint, connection_snapshot, needs_kosell, preview_delivery
 from .engine import Engine
 from .models import ServiceError, money, now, rub, timestamp
+from .updates import Updates, read_json
 
 LABELS = {
     "greeting": "👋 Приветствие",
@@ -53,25 +55,38 @@ class Form(StatesGroup):
 
 
 class AdminOnly(BaseMiddleware):
-    def __init__(self, admins):
+    def __init__(self, admins, maintenance=None):
         self.admins = set(admins)
+        self.maintenance = maintenance
 
     async def __call__(self, handler, event, data):
         if not event.from_user or event.from_user.id not in self.admins:
             if isinstance(event, CallbackQuery):
                 await event.answer("Нет доступа", show_alert=True)
             return None
+        if self.maintenance and self.maintenance.exists():
+            text = "Обновление и проверка запуска: обработка заказов и настройки временно приостановлены."
+            result = read_json(self.maintenance.parent / "result.json", {})
+            if isinstance(result, dict) and result.get("status") == "manual_required":
+                text = "Автоматическое восстановление не завершено. Нужна проверка сервера администратором."
+            if isinstance(event, CallbackQuery):
+                await event.answer(text, show_alert=True)
+            else:
+                await event.answer(text)
+            return None
         return await handler(event, data)
 
 
 class TelegramUI:
-    def __init__(self, bot: Bot, engine: Engine, admins, data_dir):
+    def __init__(self, bot: Bot, engine: Engine, admins, data_dir, project_dir=None):
         self.bot, self.engine, self.db = bot, engine, engine.db
         self.data_dir = data_dir
         self.analytics = Analytics(self.db)
+        self.updates = Updates(self.db, project_dir)
         self.router = Router()
-        self.router.message.outer_middleware(AdminOnly(admins))
-        self.router.callback_query.outer_middleware(AdminOnly(admins))
+        maintenance = self.updates.folder / "maintenance.json" if self.updates.folder else None
+        self.router.message.outer_middleware(AdminOnly(admins, maintenance))
+        self.router.callback_query.outer_middleware(AdminOnly(admins, maintenance))
         self.register()
 
     def register(self):
@@ -80,6 +95,7 @@ class TelegramUI:
         r.message.register(self.cancel, Command("cancel"))
         r.message.register(self.start, Command("menu"))
         r.message.register(self.setup_menu, Command("setup"))
+        r.message.register(self.updates_menu, Command("version"))
         r.message.register(self.status, Command("status"))
         r.message.register(self.bind_start, Command("bind"))
         r.message.register(self.report_command, Command("report"))
@@ -94,6 +110,7 @@ class TelegramUI:
 
     async def start(self, message: Message, state: FSMContext):
         await state.clear()
+        self.db.set("update_offer", None)
         status = (
             "⏸ пауза"
             if self.db.get("paused")
@@ -102,12 +119,13 @@ class TelegramUI:
             else "⚪ нет успешной сверки"
         )
         await message.answer(
-            "PlayerokHelper\nДобро пожаловать! Выберите действие.\n"
+            f"PlayerokHelper {__version__}\nДобро пожаловать! Выберите действие.\n"
             f"Автоматизация: {status}\n"
             f"Готовность подключения: {self.db.get('readiness_status', 'не проверена')}",
             reply_markup=keyboard(
                 [
                     ("🧙 Настроить магазин", "setup:home"),
+                    ("⬆️ Версия и обновления", "updates:home"),
                     ("⭐ Автонастройки", "menu:auto"),
                     ("👤 Профиль", "menu:profile"),
                     ("📈 Аналитика", "menu:analytics"),
@@ -120,6 +138,7 @@ class TelegramUI:
 
     async def cancel(self, message, state):
         await state.clear()
+        self.db.set("update_offer", None)
         await message.answer("Ввод отменён. /menu")
 
     async def status(self, message, state=None):
@@ -156,7 +175,7 @@ class TelegramUI:
             return "✅" if ok else "⬜"
 
         lines = [
-            "🧙 Мастер первого запуска · PlayerokHelper 0.2.0",
+            f"🧙 Мастер первого запуска · PlayerokHelper {__version__}",
             f"{mark(playerok_ok)} 1. Подключить Playerok",
             f"{mark(source and (source == 'stock' or kosell_ok))} 2. Источник: "
             + ({"stock": "свой склад", "kosell": "KOSell"}.get(source, "выберите ниже")),
@@ -253,12 +272,100 @@ class TelegramUI:
             reply_markup=keyboard([("‹ К лоту", "lot:" + item_id), ("🧙 Мастер", "setup:home")]),
         )
 
+    async def updates_menu(self, message, state=None):
+        self.db.set("update_offer", None)
+        if state:
+            await state.clear()
+        release = self.updates.available()
+        lines = [
+            f"⬆️ PlayerokHelper {__version__}",
+            "Проверка новых стабильных версий — раз в 6 часов.",
+            "Последняя проверка: " + self.engine.expiry(self.db.get("update_check_at")),
+        ]
+        if self.db.get("update_check_error"):
+            lines.append(self.db.get("update_check_error"))
+        rows = [("🔄 Проверить сейчас", "updates:check")]
+        if release:
+            lines += ["\nДоступна " + release["tag"], release["body"][:1000], release["url"]]
+            if self.updates.enabled() and not self.updates.busy():
+                rows.append(("⬆️ Обновить бота", "updates:offer"))
+        else:
+            lines.append(
+                "Новая версия пока не найдена. Нажмите «Проверить сейчас» для актуального результата."
+            )
+        if not self.updates.enabled():
+            lines.append(
+                "Обновление кнопкой требует однократной установки v0.3.0+ со службой systemd. "
+                "Для Docker и ручного запуска обновляйте установку обычным способом."
+            )
+        if self.updates.busy():
+            lines.append("Обновление уже поставлено в очередь или выполняется.")
+        for item in self.db.get("update_history", [])[:5]:
+            label = {
+                "success": "установлено",
+                "rolled_back": "выполнен откат",
+                "failed": "не установлено",
+                "manual_required": "нужна проверка сервера",
+            }.get(item.get("status"), "неизвестно")
+            lines.append(f"\n{self.engine.expiry(item.get('finished_at'))}: {item.get('tag')} — {label}")
+            reason = {
+                "modified_project": "В проекте есть локальные изменения; они сохранены.",
+                "main_branch_required": "Для обновления требуется ветка main.",
+                "release_tag_changed": "Коммит релиза изменился; нужна повторная проверка версии.",
+                "release_changes_private_files": "Релиз затрагивает настройки или данные; установка остановлена.",
+                "command_failed": "Не выполнена загрузка, сборка или установка; прежняя версия сохранена либо восстановлена.",
+                "health_check_failed": "Новая версия не подтвердила успешный запуск.",
+                "worker_still_running": "Другой процесс использует базу магазина.",
+                "project_changed_during_update": "Файлы проекта изменились во время подготовки.",
+            }.get(item.get("reason"))
+            if reason:
+                lines.append(reason)
+        rows += [
+            (
+                "🔔 Уведомления: " + ("вкл" if self.db.get("update_notifications") else "выкл"),
+                "updates:toggle",
+            ),
+            ("‹ В меню", "menu:home"),
+        ]
+        await message.answer("\n".join(lines)[:4000], reply_markup=keyboard(rows))
+
     async def callback(self, query: CallbackQuery, state: FSMContext):
         await query.answer()
         message = query.message
         data = query.data or ""
         await state.set_state(None)
         try:
+            if data == "updates:home":
+                return await self.updates_menu(message, state)
+            if data == "updates:check":
+                await self.updates.check(force=True)
+                return await self.updates_menu(message, state)
+            if data == "updates:toggle":
+                self.db.set("update_notifications", not self.db.get("update_notifications"))
+                return await self.updates_menu(message, state)
+            if data == "updates:offer":
+                offer = self.updates.offer()
+                return await message.answer(
+                    f"Установить {offer['tag']}?\nСначала подготовим версию, затем остановим бот и "
+                    "создадим копию базы. При ошибке запуска вернём прежнюю версию и базу. "
+                    "Во время установки заказы и настройки временно недоступны.\n"
+                    "Предложение действует 10 минут.",
+                    reply_markup=keyboard(
+                        [
+                            ("Установить " + offer["tag"], "updates:install:" + offer["nonce"]),
+                            ("Отмена", "updates:home"),
+                        ]
+                    ),
+                )
+            if data.startswith("updates:install:"):
+                try:
+                    self.updates.request(data.split(":", 2)[2])
+                except ValueError as exc:
+                    return await message.answer(str(exc))
+                return await message.answer(
+                    "Обновление поставлено в очередь. Подготовка может занять несколько минут. "
+                    "После запуска придёт сообщение с результатом."
+                )
             if data == "menu:home":
                 return await self.start(message, state)
             if data == "setup:home":
@@ -1069,6 +1176,7 @@ class TelegramUI:
     async def help(self, message, state=None):
         await message.answer(
             "/setup — мастер подключения и первого лота\n"
+            "/version — версия, проверка обновлений и журнал\n"
             "Настройка: /bind — готовый лот; затем загрузите склад или укажите игру KOSell.\n"
             "/status — подключение\n/report — Excel\n/reply ID_ЧАТА текст — ответ с предпросмотром\n"
             "/cancel — отмена формы\n/menu — главное меню\n\n"
@@ -1089,6 +1197,8 @@ class TelegramUI:
                 )
             else:
                 markup = keyboard([("Открыть заказ", "order:" + order_id)]) if order_id else None
+                if purpose == "update":
+                    markup = keyboard([("⬆️ Обновить бота", "updates:home")])
                 result = await self.bot.send_message(int(target), text[:4000], reply_markup=markup)
             return str(result.message_id)
         except TelegramRetryAfter as exc:

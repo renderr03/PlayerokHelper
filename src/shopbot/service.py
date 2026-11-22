@@ -14,6 +14,8 @@ from dotenv import dotenv_values
 
 SERVICE_NAME = "playerokhelper.service"
 UNIT_PATH = Path("/etc/systemd/system") / SERVICE_NAME
+UPDATE_HELPER_PATH = Path("/usr/local/libexec/playerokhelper-updater.py")
+UPDATE_CONFIG_PATH = Path("/etc/playerokhelper-updater.json")
 DIRECTORY_MARKER = "# PlayerokHelper-Directory: "
 
 
@@ -71,6 +73,40 @@ def check_platform():
         )
 
 
+def render_update_units(directory: Path):
+    marker = DIRECTORY_MARKER + json.dumps(str(directory), ensure_ascii=True)
+    helper = unit_quote(str(UPDATE_HELPER_PATH), executable=True)
+    # The privileged manager must never execute a user-owned pyenv/venv Python.
+    # The owner's selected Python is used only by the unprivileged build worker.
+    python = unit_quote("/usr/bin/python3", executable=True)
+    config = unit_quote(str(UPDATE_CONFIG_PATH), executable=True)
+    service = f"""# Managed by PlayerokHelper
+{marker}
+[Unit]
+Description=PlayerokHelper update manager
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=oneshot
+ExecStart={python} {helper} --config {config}
+TimeoutStartSec=1200
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+"""
+    path = f"""# Managed by PlayerokHelper
+{marker}
+[Unit]
+Description=Watch PlayerokHelper update requests
+[Path]
+PathExists={unit_quote(str(directory / ".updates/request.json"))}
+Unit=playerokhelper-update.service
+[Install]
+WantedBy=multi-user.target
+"""
+    return service, path
+
+
 def check_existing_unit(directory: Path):
     if not UNIT_PATH.exists():
         return
@@ -98,6 +134,14 @@ def install_service(directory: Path, *, runner=None, output=print):
             "Сначала выполните playerokhelper setup: нужны токен, ID администратора и ключ."
         )
     check_existing_unit(directory)
+    if UPDATE_CONFIG_PATH.exists():
+        try:
+            if json.loads(UPDATE_CONFIG_PATH.read_text())["directory"] != str(directory):
+                raise ValueError()
+        except (ValueError, KeyError):
+            raise ServiceSetupError(
+                "Обновлятор принадлежит другой установке. Используйте исходный каталог."
+            ) from None
     privilege = []
     if os.geteuid() != 0:
         if not shutil.which("sudo"):
@@ -120,7 +164,48 @@ def install_service(directory: Path, *, runner=None, output=print):
         source.write_text(unit)
         source.chmod(0o600)
         run(["install", "-m", "0644", str(source), str(UNIT_PATH)])
+        # Only this console installation can install/replace the privileged helper.
+        run(["install", "-d", "-m", "0755", str(UPDATE_HELPER_PATH.parent)])
+        run(
+            [
+                "install",
+                "-m",
+                "0644",
+                str(Path(__file__).with_name("updater_worker.py")),
+                str(UPDATE_HELPER_PATH),
+            ]
+        )
+        data_dir = Path(settings.get("DATA_DIR") or "data")
+        if not data_dir.is_absolute():
+            data_dir = directory / data_dir
+        config_source = Path(temporary) / "updater.json"
+        config_source.write_text(
+            json.dumps(
+                {
+                    "directory": str(directory),
+                    "uid": os.geteuid(),
+                    "gid": os.getegid(),
+                    "data_dir": str(data_dir.resolve()),
+                    "python": str(Path(sys._base_executable).resolve()),
+                }
+            )
+        )
+        run(["install", "-m", "0644", str(config_source), str(UPDATE_CONFIG_PATH)])
+        for name, text in zip(
+            ["playerokhelper-update.service", "playerokhelper-update.path"],
+            render_update_units(directory),
+            strict=True,
+        ):
+            source = Path(temporary) / name
+            source.write_text(text)
+            run(["install", "-m", "0644", str(source), str(UNIT_PATH.parent / name)])
+    from .setup_console import atomic_write
+
+    (directory / ".updates").mkdir(parents=True, exist_ok=True, mode=0o700)
     run(["systemctl", "daemon-reload"])
+    run(["systemctl", "enable", "--now", "playerokhelper-update.path"])
+    run(["systemctl", "is-active", "--quiet", "playerokhelper-update.path"])
+    atomic_write(directory / ".updates/enabled.json", json.dumps({"protocol": 1}))
     run(["systemctl", "enable", SERVICE_NAME])
     run(["systemctl", "reset-failed", SERVICE_NAME])
     run(["systemctl", "restart", SERVICE_NAME])

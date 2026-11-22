@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -21,6 +21,8 @@ class Config:
     timezone: str = "Europe/Moscow"
     poll_seconds: int = 15
     visibility_file: Path = Path("secrets/visibility.json")
+    project_dir: Path = field(default_factory=Path.cwd)
+    updates_enabled: bool = True
 
     @classmethod
     def load(cls) -> Config:
