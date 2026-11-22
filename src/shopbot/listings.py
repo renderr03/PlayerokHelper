@@ -4,6 +4,7 @@ import asyncio
 import uuid
 from datetime import datetime
 
+from .alerts import Alerts
 from .engine import Engine
 from .models import ServiceError, money, now, rub
 
@@ -13,7 +14,7 @@ class Listings:
         self.engine, self.db = engine, engine.db
         self.lock = asyncio.Lock()
 
-    async def availability(self, binding, products, balance):
+    async def availability(self, binding, products, balance, quotes=None):
         if self.db.get("paused") or binding["paused"]:
             return "manual_pause"
         if binding["module"] == "stock":
@@ -33,7 +34,16 @@ class Listings:
         if binding["module"] == "kosell":
             if not product["min_hours"] <= binding["hours"] <= product["max_hours"]:
                 return "invalid_duration"
-            cost = rub((await self.engine.kosell.quote(binding["product_id"], binding["hours"]))["total_rub"])
+            quotes = {} if quotes is None else quotes
+            key = (binding["product_id"], binding["hours"])
+            if key not in quotes:
+                # Cache failures too: other lots and alerts must not retry the same
+                # failed quote again during this cycle.
+                quotes[key] = None
+                quotes[key] = await self.engine.kosell.quote(*key)
+            if quotes[key] is None:
+                raise ServiceError("quote_unavailable")
+            cost = rub(quotes[key]["total_rub"])
         else:
             # Exact extension price depends on the chosen existing rental. Check it
             # again before debit; hourly price is only the availability estimate.
@@ -44,21 +54,25 @@ class Listings:
             return "insufficient_rub_balance"
         return None
 
-    async def tick(self):
+    async def tick(self, *, snapshot=None):
         async with self.lock:
             rows = self.db.all("SELECT * FROM bindings")
             products = balance = None
+            quotes = {}
             if any(b["module"] != "stock" for b in rows):
                 try:
                     products = {p["id"]: p for p in await self.engine.kosell.products()}
-                    balance = rub((await self.engine.kosell.balance())["balance_rub"])
+                    if snapshot is None:
+                        balance = rub((await self.engine.kosell.balance())["balance_rub"])
+                    elif snapshot.get("services", {}).get("kosell", {}).get("ok"):
+                        balance = rub(snapshot["kosell_balance"]["balance_rub"])
                 except ServiceError:
                     self.db.notify(
                         "KOSell недоступен: скрываем связанные лоты.", f"kosell_outage:{int(now() // 3600)}"
                     )
             for binding in rows:
                 try:
-                    reason = await self.availability(binding, products, balance)
+                    reason = await self.availability(binding, products, balance, quotes)
                 except ServiceError:
                     reason = "quote_unavailable"
                 item_id = binding["item_id"]
@@ -120,6 +134,8 @@ class Listings:
                         f"Лот {item_id}: операция не выполнена ({exc.code}). Проверьте доступность.",
                         f"listing_error:{item_id}:{exc.code}:{int(now() // 3600)}",
                     )
+
+            await Alerts(self.engine).availability(rows, products, balance, quotes)
 
     async def action(self, binding, item, kind):
         item_id = item["id"]

@@ -49,6 +49,8 @@ class Playerok:
     this account and contract is required by the production readiness gate.
     """
 
+    configured = True
+
     def __init__(self, session: dict, visibility_file: Path | None = None, *, transport=None):
         if not session.get("cookie") or not session.get("user_agent"):
             raise ValueError("playerok.json должен содержать cookie и user_agent")

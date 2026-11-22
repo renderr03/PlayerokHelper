@@ -13,6 +13,7 @@ from .models import ServiceError
 
 class KOSell:
     def __init__(self, base_url: str, api_key: str, *, transport=None):
+        self.configured = bool(api_key)
         self.client = httpx.AsyncClient(
             base_url=base_url,
             headers={"X-API-Key": api_key},

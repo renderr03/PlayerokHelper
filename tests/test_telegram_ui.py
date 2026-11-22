@@ -137,3 +137,99 @@ async def test_stale_reply_preview_cannot_send_a_different_draft(panel):
     row = ui.db.one("SELECT * FROM outbox WHERE channel='playerok'")
     assert row["target"] == "B"
     assert ui.db.decrypt(row["ciphertext"]) == "Второй ответ"
+
+
+async def test_setup_wizard_stock_preview_and_auth(panel):
+    from conftest import binding
+
+    ui, session, send = panel
+    ui.db.set("live_enabled", False)
+    ui.db.set(
+        "visibility_proof",
+        {
+            "account_id": ui.engine.market.user_id,
+            "fingerprint": ui.engine.market.fingerprint(),
+        },
+    )
+    await send("/setup", user=999)
+    assert not session.calls
+    await send(callback="setup:source:kosell", user=999)
+    assert ui.db.get("setup_source") is None
+    await send("/setup")
+    assert "Мастер первого запуска" in session.calls[-1].text
+    assert "setup --connections" in session.calls[-1].text
+    assert "stop playerokhelper" in session.calls[-1].text
+    assert not ui.db.get("live_enabled")  # diagnostic UI cannot enable live actions
+    await send(callback="setup:source:stock")
+    assert ui.db.get("setup_source") == "stock"
+    assert "✅ 2. Источник: свой склад" in session.calls[-1].text
+    binding(ui.db, module="stock")
+    ui.db.add_stock("item1", ["login:do-not-show-this-password"])
+    await send(callback="preview:lot:item1", user=999)
+    assert ui.db.get("last_preview") is None
+    await send(callback="preview:lot:item1")
+    assert "проверки пройдены" in session.calls[-1].text
+    assert "do-not-show-this-password" not in session.calls[-1].text
+    assert ui.db.one("SELECT state FROM stock")["state"] == "free"
+    assert not ui.db.get("live_enabled")
+    await send("/setup")
+    assert "✅ 5." in session.calls[-1].text
+    ui.db.execute("UPDATE bindings SET instruction='changed'")
+    await send("/setup")
+    assert "⬜ 5." in session.calls[-1].text
+
+
+async def test_alert_settings_validation_cancel_and_toggle(panel):
+    ui, session, send = panel
+    await send(callback="alerts:edit:stock_low", user=999)
+    assert len(session.calls) == 1 and isinstance(session.calls[0], AnswerCallbackQuery)
+    assert ui.db.get("stock_low") == 3
+    await send(callback="alerts:home")
+    assert "Ранние предупреждения" in session.calls[-1].text
+    await send(callback="alerts:edit:stock_low")
+    await send("-1")
+    assert ui.db.get("stock_low") == 3
+    await send("7")
+    assert ui.db.get("stock_low") == 7
+    await send(callback="alerts:edit:rental_low")
+    await send("/cancel")
+    await send("5")
+    assert ui.db.get("rental_low") == 2
+    await send(callback="alerts:toggle")
+    assert ui.db.get("alerts_enabled") is False
+    await send(callback="alerts:toggle")
+    assert ui.db.get("alerts_enabled") is True
+
+
+async def test_extension_preview_selects_existing_rental_and_revalidates(panel):
+    from conftest import binding, order
+
+    from shopbot.models import now
+
+    ui, session, send = panel
+    market = ui.engine.market
+    ui.db.set(
+        "visibility_proof",
+        {
+            "account_id": market.user_id,
+            "fingerprint": market.fingerprint(),
+        },
+    )
+    binding(ui.db, item_id="original")
+    binding(ui.db, module="extend", item_id="extension")
+    order(ui.engine, market, item_id="original")
+    ui.engine.update(
+        "order1",
+        stage="delivered",
+        expires_at=now() + 3600,
+        rental_uid="uid:playerok:rent:order1",
+    )
+    await send(callback="preview:lot:extension")
+    callback = session.calls[-1].reply_markup.inline_keyboard[0][0].callback_data
+    assert callback.startswith("preview:extend:") and len(callback.encode()) <= 64
+    await send(callback=callback)
+    assert "проверки пройдены" in session.calls[-1].text
+    ui.engine.update("order1", expires_at=now() - 1)
+    await send(callback=callback)
+    assert "действующую аренду" in session.calls[-1].text
+    assert ui.engine.kosell.extensions == 0

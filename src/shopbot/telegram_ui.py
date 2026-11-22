@@ -21,6 +21,7 @@ from aiogram.types import (
 )
 
 from .analytics import Analytics
+from .checks import binding_fingerprint, connection_snapshot, needs_kosell, preview_delivery
 from .engine import Engine
 from .models import ServiceError, money, now, rub, timestamp
 
@@ -78,6 +79,7 @@ class TelegramUI:
         r.message.register(self.start, CommandStart())
         r.message.register(self.cancel, Command("cancel"))
         r.message.register(self.start, Command("menu"))
+        r.message.register(self.setup_menu, Command("setup"))
         r.message.register(self.status, Command("status"))
         r.message.register(self.bind_start, Command("bind"))
         r.message.register(self.report_command, Command("report"))
@@ -105,6 +107,7 @@ class TelegramUI:
             f"Готовность подключения: {self.db.get('readiness_status', 'не проверена')}",
             reply_markup=keyboard(
                 [
+                    ("🧙 Настроить магазин", "setup:home"),
                     ("⭐ Автонастройки", "menu:auto"),
                     ("👤 Профиль", "menu:profile"),
                     ("📈 Аналитика", "menu:analytics"),
@@ -128,6 +131,128 @@ class TelegramUI:
             f"Последняя успешная сверка: {self.engine.expiry(self.db.get('last_poll'))}"
         )
 
+    async def setup_menu(self, message, state):
+        await state.clear()
+        snapshot = await connection_snapshot(
+            self.db, self.engine.market, self.engine.kosell, check_kosell=needs_kosell(self.db)
+        )
+        bindings = self.db.all("SELECT * FROM bindings ORDER BY rowid")
+        source = self.db.get("setup_source") or (
+            "kosell" if any(b["module"] != "stock" for b in bindings) else "stock" if bindings else None
+        )
+        playerok_ok = snapshot["services"]["playerok"]["ok"]
+        kosell_ok = snapshot["services"].get("kosell", {}).get("ok", False)
+        visibility_ok = playerok_ok and not any(i.startswith("visibility_") for i in snapshot["issues"])
+        last = self.db.get("last_preview", {})
+        checked = next((b for b in bindings if b["item_id"] == last.get("item_id")), None)
+        preview_ok = (
+            checked
+            and last.get("ok")
+            and now() - last.get("at", 0) < 60
+            and binding_fingerprint(checked) == last.get("binding")
+        )
+
+        def mark(ok):
+            return "✅" if ok else "⬜"
+
+        lines = [
+            "🧙 Мастер первого запуска · PlayerokHelper 0.2.0",
+            f"{mark(playerok_ok)} 1. Подключить Playerok",
+            f"{mark(source and (source == 'stock' or kosell_ok))} 2. Источник: "
+            + ({"stock": "свой склад", "kosell": "KOSell"}.get(source, "выберите ниже")),
+            f"{mark(visibility_ok)} 3. Проверить скрытие и восстановление",
+            f"{mark(bindings)} 4. Привязать первый лот",
+            f"{mark(preview_ok)} 5. Проверить сценарий в карточке лота (актуальность 60 секунд)",
+            "\nНа сервере, в каталоге проекта:",
+            ".venv/bin/playerokhelper setup --connections",
+            "sudo systemctl restart playerokhelper",
+            "Ключи и сессия вводятся только в консоли. Не присылайте их в чат.",
+            "\nДля живого теста выберите свой активный тестовый лот и выполните на сервере:",
+            "sudo systemctl stop playerokhelper",
+            ".venv/bin/playerokhelper verify-visibility --item UUID_ЛОТА --confirm-reversible-test",
+            "sudo systemctl start playerokhelper",
+            "После теста снова откройте /setup. От root команды выполняются без sudo. "
+            "Для Docker и ручного запуска — инструкция в репозитории.",
+        ]
+        if snapshot["issues"]:
+            lines.append("\nТребует внимания: " + ", ".join(snapshot["issues"]))
+        rows = [
+            ("📦 Использовать свой склад", "setup:source:stock"),
+            ("🎮 Использовать KOSell", "setup:source:kosell"),
+            ("🔄 Проверить подключение", "setup:home"),
+            ("➕ Привязать лот", "bind:new"),
+        ]
+        rows += [
+            ("🧪 " + (b["title"][:30] or b["item_id"]), "preview:lot:" + b["item_id"]) for b in bindings[:10]
+        ]
+        rows += [("🚨 Предупреждения", "alerts:home"), ("‹ В меню", "menu:home")]
+        await message.answer("\n".join(lines), reply_markup=keyboard(rows))
+
+    async def alerts_menu(self, message):
+        await message.answer(
+            "🚨 Ранние предупреждения (для всего магазина)\n"
+            f"Состояние: {'включены' if self.db.get('alerts_enabled') else 'выключены'}\n"
+            f"Остаток склада ≤ {self.db.get('stock_low')}\n"
+            f"Баланс примерно на ≤ {self.db.get('rental_low')} аренд каждого лота KOSell\n"
+            "Оценки используют общий баланс и не суммируются. Для продлений оценка не строится.\n"
+            "Проверка раз в минуту. Сбой подключения: три неудачи подряд; восстановление: два успеха.\n"
+            "При появлении проблемы и восстановлении приходит по одному уведомлению. "
+            "Повторное уведомление — только при новом возникновении проблемы.",
+            reply_markup=keyboard(
+                [
+                    ("Выключить" if self.db.get("alerts_enabled") else "Включить", "alerts:toggle"),
+                    ("✏ Порог склада", "alerts:edit:stock_low"),
+                    ("✏ Порог аренд", "alerts:edit:rental_low"),
+                    ("‹ Назад", "menu:account"),
+                ]
+            ),
+        )
+
+    async def preview_menu(self, message, item_id):
+        binding = self.db.one("SELECT rowid AS rid,* FROM bindings WHERE item_id=?", (item_id,))
+        if not binding:
+            return await message.answer("Лот не найден.")
+        if binding["module"] != "extend":
+            return await self.show_preview(message, item_id)
+        rentals = self.db.all(
+            "SELECT o.rowid AS rid,o.id,o.rental_number FROM orders o "
+            "JOIN bindings b ON b.item_id=o.item_id WHERE o.module='kosell' "
+            "AND o.stage='delivered' AND o.market_status!='ROLLED_BACK' AND o.problem=0 "
+            "AND o.expires_at>? AND b.product_id=? ORDER BY o.created_at DESC LIMIT 20",
+            (now(), binding["product_id"]),
+        )
+        await message.answer(
+            "Выберите действующую аренду своего магазина для расчёта продления. "
+            "Списания и продления не будет. Показаны до 20 последних подходящих аренд."
+            if rentals
+            else "Подходящих действующих аренд нет. Продление проверить пока нельзя.",
+            reply_markup=keyboard(
+                [
+                    (r["rental_number"] or r["id"], f"preview:extend:{binding['rid']}:{r['rid']}")
+                    for r in rentals
+                ]
+                + [("‹ К лоту", "lot:" + item_id)]
+            ),
+        )
+
+    async def show_preview(self, message, item_id, rental_id=None):
+        result = await preview_delivery(self.engine, item_id, rental_id=rental_id)
+        binding = self.db.one("SELECT * FROM bindings WHERE item_id=?", (item_id,))
+        if binding:
+            self.db.set(
+                "last_preview",
+                {
+                    "item_id": item_id,
+                    "at": result.checked_at,
+                    "ok": not result.issues,
+                    "binding": result.binding,
+                },
+            )
+        await message.answer(
+            result.text(self.engine.expiry),
+            reply_markup=keyboard([("‹ К лоту", "lot:" + item_id), ("🧙 Мастер", "setup:home")]),
+        )
+
     async def callback(self, query: CallbackQuery, state: FSMContext):
         await query.answer()
         message = query.message
@@ -136,6 +261,35 @@ class TelegramUI:
         try:
             if data == "menu:home":
                 return await self.start(message, state)
+            if data == "setup:home":
+                return await self.setup_menu(message, state)
+            if data.startswith("setup:source:"):
+                source = data.rsplit(":", 1)[1]
+                if source not in {"stock", "kosell"}:
+                    return
+                self.db.set("setup_source", source)
+                return await self.setup_menu(message, state)
+            if data == "alerts:home":
+                return await self.alerts_menu(message)
+            if data == "alerts:toggle":
+                self.db.set("alerts_enabled", not self.db.get("alerts_enabled"))
+                return await self.alerts_menu(message)
+            if data.startswith("alerts:edit:"):
+                key = data.rsplit(":", 1)[1]
+                if key not in {"stock_low", "rental_low"}:
+                    return
+                await state.set_state(Form.value)
+                await state.update_data(edit=key)
+                return await message.answer("Введите целый порог от 0 до 10000. /cancel — отмена.")
+            if data.startswith("preview:lot:"):
+                return await self.preview_menu(message, data.split(":", 2)[2])
+            if data.startswith("preview:extend:"):
+                _, _, binding_row, rental_row = data.split(":")
+                binding = self.db.one("SELECT * FROM bindings WHERE rowid=?", (int(binding_row),))
+                rental = self.db.one("SELECT id FROM orders WHERE rowid=?", (int(rental_row),))
+                if binding and binding["module"] == "extend" and rental:
+                    return await self.show_preview(message, binding["item_id"], rental["id"])
+                return await message.answer("Лот или аренда больше не доступны. Откройте карточку лота.")
             if data == "menu:auto":
                 return await self.auto_menu(message, state)
             if data == "menu:profile":
@@ -189,6 +343,7 @@ class TelegramUI:
                                 "toggle:paused",
                             ),
                             ("🗃 Создать резервную копию", "backup"),
+                            ("🚨 Ранние предупреждения", "alerts:home"),
                             ("‹ Назад", "menu:home"),
                         ]
                     ),
@@ -500,6 +655,7 @@ class TelegramUI:
             for key, label in LABELS.items()
         ]
         rows += [
+            ("🚨 Ранние предупреждения", "alerts:home"),
             ("📦 Автовыдача", "menu:plugins"),
             ("✏ Тексты сообщений", "templates"),
             ("🤖 Правила автоответчика", "edit:rules"),
@@ -548,6 +704,7 @@ class TelegramUI:
             return
         count = self.db.one("SELECT count(*) n FROM stock WHERE item_id=? AND state='free'", (item_id,))["n"]
         rows = [
+            ("🧪 Проверить сценарий", f"preview:lot:{item_id}"),
             ("▶ Снять ручную паузу" if b["paused"] else "⏸ Ручная пауза", f"lotflag:paused:{item_id}"),
             ("Автовыставление: " + str(bool(b["auto_restore"])), f"lotflag:auto_restore:{item_id}"),
             ("Автоподнятие: " + str(bool(b["auto_bump"])), f"lotflag:auto_bump:{item_id}"),
@@ -672,6 +829,11 @@ class TelegramUI:
                     self.db.set("override:" + scope, value)
                 else:
                     self.db.set("rules", rules)
+            elif key in {"stock_low", "rental_low"}:
+                threshold = int(text)
+                if not 0 <= threshold <= 10000:
+                    raise ValueError()
+                self.db.set(key, threshold)
             elif key == "work_hours":
                 start, end = map(int, text.split("-"))
                 if not 0 <= start < 24 or not 0 <= end <= 24 or start == end:
@@ -906,6 +1068,7 @@ class TelegramUI:
 
     async def help(self, message, state=None):
         await message.answer(
+            "/setup — мастер подключения и первого лота\n"
             "Настройка: /bind — готовый лот; затем загрузите склад или укажите игру KOSell.\n"
             "/status — подключение\n/report — Excel\n/reply ID_ЧАТА текст — ответ с предпросмотром\n"
             "/cancel — отмена формы\n/menu — главное меню\n\n"

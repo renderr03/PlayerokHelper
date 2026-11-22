@@ -9,7 +9,9 @@ from datetime import datetime, timedelta
 from aiogram import Bot
 from aiogram.types import ErrorEvent
 
+from .alerts import Alerts
 from .analytics import Analytics
+from .checks import connection_snapshot, needs_kosell
 from .config import Config
 from .conversations import Conversations
 from .db import Database
@@ -22,6 +24,7 @@ from .telegram_ui import TelegramUI, dispatcher
 
 
 class UnconfiguredPlayerok:
+    configured = False
     user_id = ""
     visibility = None
 
@@ -46,28 +49,18 @@ def market_from_config(config):
 
 
 async def readiness(db: Database, market, kosell, *, needs_kosell=True) -> tuple[bool, list[str]]:
-    issues = []
-    try:
-        profile = await market.profile()
-        # Persist only the account fields used by the panel, not email or cookies.
-        db.set("profile", {k: profile.get(k) for k in ("id", "username", "balance")})
+    snapshot = await connection_snapshot(db, market, kosell, check_kosell=needs_kosell)
+    if "profile" in snapshot:
+        db.set("profile", snapshot["profile"])
         db.set("last_profile", now())
-    except ServiceError as exc:
-        issues.append(exc.code)
-    if needs_kosell:
-        try:
-            db.set("kosell_balance", await kosell.balance())
-        except ServiceError as exc:
-            issues.append(exc.code)
-    if not market.visibility:
-        issues.append("visibility_contract_missing")
-    else:
-        proof = db.get("visibility_proof") or {}
-        if proof.get("account_id") != market.user_id or proof.get("fingerprint") != market.fingerprint():
-            issues.append("visibility_roundtrip_not_verified")
+    if "kosell_balance" in snapshot:
+        db.set("kosell_balance", snapshot["kosell_balance"])
+    db.set("connection_snapshot", snapshot)
+    issues = snapshot["issues"]
     db.set("readiness_status", "готово" if not issues else ", ".join(issues))
-    # KOSell outages must not disable Playerok hiding or existing-stock delivery.
-    market_ready = not any(i.startswith("playerok_") or i.startswith("visibility_") for i in issues)
+    market_ready = snapshot["services"]["playerok"]["ok"] and not any(
+        i.startswith("visibility_") for i in issues
+    )
     db.set("live_enabled", market_ready)
     return not issues, issues
 
@@ -81,12 +74,19 @@ class Runtime:
 
     async def cycle(self):
         if now() - self.db.get("last_readiness", 0) >= 60:
-            await readiness(self.db, self.engine.market, self.engine.kosell)
+            await readiness(
+                self.db, self.engine.market, self.engine.kosell, needs_kosell=needs_kosell(self.db)
+            )
+            snapshot = self.db.get("connection_snapshot")
+            alerts = Alerts(self.engine)
+            alerts.connections(snapshot["services"])
+            if not self.db.get("live_enabled"):
+                await alerts.availability(self.db.all("SELECT * FROM bindings"), None, None, {})
             self.db.set("last_readiness", now())
         # Telegram delivery remains usable while live marketplace actions are gated.
         if self.db.get("live_enabled"):
             if now() - self.db.get("last_listings", 0) >= 60:
-                await self.listings.tick()
+                await self.listings.tick(snapshot=self.db.get("connection_snapshot"))
                 self.db.set("last_listings", now())
             if not self.db.get("paused"):
                 await self.engine.poll_orders()

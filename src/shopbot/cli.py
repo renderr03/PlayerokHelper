@@ -9,6 +9,7 @@ from pathlib import Path
 
 from cryptography.fernet import Fernet, InvalidToken
 
+from .checks import needs_kosell
 from .config import Config
 from .db import Database
 from .kosell import KOSell
@@ -23,7 +24,7 @@ async def doctor(config):
     market = market_from_config(config)
     kosell = KOSell(config.kosell_url, config.kosell_key)
     try:
-        ready, issues = await readiness(db, market, kosell)
+        ready, issues = await readiness(db, market, kosell, needs_kosell=needs_kosell(db))
         print(json.dumps({"ready": ready, "issues": issues}, ensure_ascii=False, indent=2))
         return 0 if ready else 2
     finally:

@@ -5,6 +5,7 @@ import json
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from .alerts import Alerts
 from .db import Database
 from .models import Deal, ServiceError, money, now, rub, timestamp
 
@@ -252,11 +253,7 @@ class Engine:
             self.fail(row["id"], "stock_empty")
             return
         self.queue_delivery(row, self.db.decrypt(stock["ciphertext"]), binding["instruction"], stock["cost"])
-        count = self.db.one(
-            "SELECT count(*) n FROM stock WHERE item_id=? AND state='free'", (row["item_id"],)
-        )["n"]
-        if count <= self.db.get("stock_low"):
-            self.db.notify(f"Остаток склада {row['item_id']}: {count}", f"low:{row['item_id']}:{count}")
+        Alerts(self).stock(row["item_id"])
 
     async def prepare_rent(self, row, binding):
         if not binding["product_id"] or binding["max_cost"] <= 0:

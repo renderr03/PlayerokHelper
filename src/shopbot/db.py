@@ -23,6 +23,8 @@ DEFAULTS = {
     "daily_report": False,
     "report_time": "23:59",
     "stock_low": 3,
+    "rental_low": 2,
+    "alerts_enabled": True,
     "features": {
         k: False
         for k in (
