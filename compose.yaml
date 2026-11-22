@@ -1,0 +1,20 @@
+services:
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATA_DIR: /app/data
+      PLAYEROK_SESSION_FILE: /run/secrets/playerok.json
+      PLAYEROK_VISIBILITY_CONTRACT: /run/secrets/visibility.json
+    volumes:
+      - shop-data:/app/data
+      - ./secrets:/run/secrets:ro
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=32m
+    stop_grace_period: 40s
+volumes:
+  shop-data:
+
