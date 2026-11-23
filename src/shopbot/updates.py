@@ -18,6 +18,29 @@ REPOSITORY = "renderr03/PlayerokHelper"
 CHECK_INTERVAL = 6 * 3600
 
 
+def release_summary(body):
+    """A compact plain-text preview; complete release notes remain on GitHub."""
+    body = re.sub(r"<!--.*?-->", "", body, flags=re.S)
+    body = re.sub(r"^\s*(`{3,}|~{3,}).*?^\s*\1\s*$", "", body, flags=re.M | re.S)
+    lines, length = [], 0
+    for raw in body.splitlines():
+        line = raw.strip()
+        if not line or re.match(r"^(?:#{1,6}\s|[-*_]{3,}$)", line):
+            continue
+        line = re.sub(r"!?\[([^\]]+)\]\([^\n)]*\)", r"\1", line)
+        line = re.sub(r"^\s*(?:[-*+] |\d+[.)] )", "• ", line)
+        line = line.replace("**", "").replace("__", "").replace("`", "")
+        line = re.sub(r"(?<!\w)([*_])([^\n]+?)\1(?!\w)", r"\2", line)
+        line = re.sub(r"\s+", " ", line).strip()
+        if not line or len(line) > 650:
+            continue
+        if length + len(line) + bool(lines) > 650 or len(lines) == 6:
+            break
+        lines.append(line)
+        length += len(line) + (len(lines) > 1)
+    return "\n".join(lines) or "Изменения и инструкция — в описании релиза."
+
+
 def version_tuple(value):
     match = re.fullmatch(r"v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", value)
     if not match:
@@ -104,7 +127,7 @@ class Updates:
                 cached = {
                     "tag": tag,
                     "sha": obj["sha"],
-                    "body": str(release.get("body") or "")[:1800],
+                    "body": release_summary(str(release.get("body") or "")),
                     "url": f"https://github.com/{REPOSITORY}/releases/tag/{tag}",
                     "checked_at": now(),
                 }
@@ -115,9 +138,9 @@ class Updates:
             return self.available()
         if self.db.get("update_notifications", True):
             self.db.notify(
-                f"🔔 Доступна новая версия PlayerokHelper {tag}.\nСейчас установлена {__version__}.\n"
-                f"{cached['body'][:1200]}\n\nОписание: {cached['url']}\n"
-                "Откройте обновление: бот подготовит версию, сделает копию базы и перезапустится.",
+                f"🔔 PlayerokHelper {tag}\nУстановлена версия {__version__}.\n\n"
+                f"{cached['body']}\n\nПодробности: {cached['url']}\n\n"
+                "Нажмите «Обновить бота» или откройте /version.",
                 "release:" + tag,
                 purpose="update",
             )

@@ -29,7 +29,7 @@ from .maintenance import update_status
 from .models import ServiceError, money, now, rub, timestamp
 from .rentals import Rentals
 from .seller_ui import MODE_NAMES, SellerUI
-from .updates import Updates, read_json
+from .updates import Updates, read_json, release_summary
 
 LABELS = {
     "greeting": "👋 Приветствие",
@@ -301,7 +301,7 @@ class TelegramUI(SellerUI):
             lines.append(self.db.get("update_check_error"))
         rows = [("🔄 Проверить сейчас", "updates:check")]
         if release:
-            lines += ["\nДоступна " + release["tag"], release["body"][:1000], release["url"]]
+            lines += ["\nДоступна " + release["tag"], release_summary(release["body"]), release["url"]]
             if self.updates.enabled() and not self.updates.busy():
                 rows.append(("⬆️ Обновить бота", "updates:offer"))
         else:

@@ -16,21 +16,21 @@ import pytest
 from shopbot import __version__, updater_worker
 from shopbot.models import now
 from shopbot.runtime import Runtime, health_loop
-from shopbot.updates import Updates, version_tuple
+from shopbot.updates import Updates, release_summary, version_tuple
 
 NONCE = "a" * 32
 SHA = "b" * 40
 TAG = "v0.5.0"
 
 
-def transport(*, annotated=False, failure=False):
+def transport(*, annotated=False, failure=False, body="Новое обновление"):
     def handle(request):
         assert request.url.host == "api.github.com"
         if failure:
             return httpx.Response(403, json={"message": "PRIVATE_TOKEN_MUST_NOT_LEAK"})
         if request.url.path.endswith("/releases/latest"):
             return httpx.Response(
-                200, json={"tag_name": TAG, "body": "Новое обновление", "draft": False, "prerelease": False}
+                200, json={"tag_name": TAG, "body": body, "draft": False, "prerelease": False}
             )
         if "/git/ref/" in request.url.path:
             return httpx.Response(
@@ -52,6 +52,40 @@ async def test_discovery_deduplicates_and_pins_commit(app, tmp_path, annotated):
     await Updates(db, tmp_path, transport=transport()).check()
     assert db.one("SELECT count(*) n FROM outbox WHERE purpose='update'")["n"] == 1
     assert release["url"] == "https://github.com/renderr03/PlayerokHelper/releases/tag/v0.5.0"
+
+
+def test_release_summary_keeps_complete_lines_without_markdown_or_install_commands():
+    body = (
+        "<!-- private editorial comment -->\n## Что нового\n\n"
+        "- **Своя аренда:** платное продление.\n"
+        "- __Чаты:__ команда ` /inbox `.\n"
+        "1. [Подробный отчёт](https://example.test/report)\n\n"
+        "```bash\ncurl https://example.test/install.sh | bash\n```\n"
+        + "- "
+        + "Длинный пункт " * 100
+        + "\n"
+        + "- *Готово*.\n" * 10
+    )
+    summary = release_summary(body)
+    assert summary.startswith("• Своя аренда: платное продление.")
+    assert "• Чаты: команда /inbox ." in summary
+    assert "• Подробный отчёт" in summary and "• Готово." in summary
+    assert not any(mark in summary for mark in ["##", "**", "__", "`", "curl", "<!--", "Длинный"])
+    assert len(summary) <= 650 and len(summary.splitlines()) == 6
+    assert release_summary("# Заголовок\n\n" + "x" * 1000) == "Изменения и инструкция — в описании релиза."
+
+
+async def test_release_notification_uses_short_plain_preview(app, tmp_path):
+    _, db, _, _ = app
+    db.set("admins", [42])
+    body = "## Изменения\n- **Чаты:** команда `/inbox`.\n" + "- Следующее улучшение.\n" * 100
+    updates = Updates(db, tmp_path, transport=transport(body=body))
+    release = await updates.check()
+    notification = db.decrypt(db.one("SELECT ciphertext FROM outbox WHERE purpose='update'")["ciphertext"])
+    assert release["body"] in notification and release["url"] in notification
+    assert "**" not in notification and "##" not in notification and "`" not in notification
+    assert notification.startswith("🔔 PlayerokHelper " + TAG)
+    assert len(notification) < 1000 and "Нажмите «Обновить бота»" in notification
 
 
 async def test_check_errors_keep_cache_and_do_not_expose_response(app, tmp_path):

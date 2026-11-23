@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="docs/releases/v0.4.0.md"><img src="https://img.shields.io/badge/Версия-0.4.0-39CDA4" alt="Версия 0.4.0"></a>
+  <a href="docs/releases/v0.4.1.md"><img src="https://img.shields.io/badge/Версия-0.4.1-39CDA4" alt="Версия 0.4.1"></a>
   <a href="https://github.com/renderr03/PlayerokHelper/actions/workflows/tests.yml"><img src="https://github.com/renderr03/PlayerokHelper/actions/workflows/tests.yml/badge.svg" alt="Проверки проекта"></a>
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&amp;logoColor=white" alt="Python 3.11 и новее">
   <img src="https://img.shields.io/badge/Размещение-свой_сервер-39CDA4" alt="Размещение на своём сервере">
@@ -32,6 +32,10 @@
 - **Всё в Telegram.** Настройки, заказы, сообщения покупателям и отчёты в одной панели.
 - **Ваш сервер и ваши настройки.** Ключи хранятся в локальном `.env`, складские данные — в зашифрованной базе.
 - **Установка одной командой.** Консоль спросит токен и ID администратора, затем настроит запуск в фоне и после перезагрузки.
+
+## Исправление v0.4.1
+
+Уведомления об обновлениях и меню `/version` показывают короткое описание обычным текстом, без Markdown-разметки и обрезанных пунктов. Полный отчёт доступен по ссылке. [Подробнее](docs/releases/v0.4.1.md).
 
 ## Новое в v0.4.0
 
