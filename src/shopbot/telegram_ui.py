@@ -24,7 +24,11 @@ from . import __version__
 from .analytics import Analytics
 from .checks import binding_fingerprint, connection_snapshot, needs_kosell, preview_delivery
 from .engine import Engine
+from .loyalty import Loyalty
+from .maintenance import update_status
 from .models import ServiceError, money, now, rub, timestamp
+from .rentals import Rentals
+from .seller_ui import MODE_NAMES, SellerUI
 from .updates import Updates, read_json
 
 LABELS = {
@@ -65,7 +69,7 @@ class AdminOnly(BaseMiddleware):
                 await event.answer("Нет доступа", show_alert=True)
             return None
         if self.maintenance and self.maintenance.exists():
-            text = "Обновление и проверка запуска: обработка заказов и настройки временно приостановлены."
+            text = update_status(self.maintenance.parent.parent)
             result = read_json(self.maintenance.parent / "result.json", {})
             if isinstance(result, dict) and result.get("status") == "manual_required":
                 text = "Автоматическое восстановление не завершено. Нужна проверка сервера администратором."
@@ -77,7 +81,7 @@ class AdminOnly(BaseMiddleware):
         return await handler(event, data)
 
 
-class TelegramUI:
+class TelegramUI(SellerUI):
     def __init__(self, bot: Bot, engine: Engine, admins, data_dir, project_dir=None):
         self.bot, self.engine, self.db = bot, engine, engine.db
         self.data_dir = data_dir
@@ -96,6 +100,7 @@ class TelegramUI:
         r.message.register(self.start, Command("menu"))
         r.message.register(self.setup_menu, Command("setup"))
         r.message.register(self.updates_menu, Command("version"))
+        r.message.register(self.workspace, Command("inbox"))
         r.message.register(self.status, Command("status"))
         r.message.register(self.bind_start, Command("bind"))
         r.message.register(self.report_command, Command("report"))
@@ -124,6 +129,8 @@ class TelegramUI:
             f"Готовность подключения: {self.db.get('readiness_status', 'не проверена')}",
             reply_markup=keyboard(
                 [
+                    ("💬 Рабочее окно", "s:inbox:new:0"),
+                    ("🎁 Бонусные товары", "s:loyalty"),
                     ("🧙 Настроить магазин", "setup:home"),
                     ("⬆️ Версия и обновления", "updates:home"),
                     ("⭐ Автонастройки", "menu:auto"),
@@ -231,15 +238,23 @@ class TelegramUI:
         binding = self.db.one("SELECT rowid AS rid,* FROM bindings WHERE item_id=?", (item_id,))
         if not binding:
             return await message.answer("Лот не найден.")
-        if binding["module"] != "extend":
+        if binding["module"] != "extend" and binding["fulfillment"] != "own_extend":
             return await self.show_preview(message, item_id)
-        rentals = self.db.all(
-            "SELECT o.rowid AS rid,o.id,o.rental_number FROM orders o "
-            "JOIN bindings b ON b.item_id=o.item_id WHERE o.module='kosell' "
-            "AND o.stage='delivered' AND o.market_status!='ROLLED_BACK' AND o.problem=0 "
-            "AND o.expires_at>? AND b.product_id=? ORDER BY o.created_at DESC LIMIT 20",
-            (now(), binding["product_id"]),
-        )
+        if binding["fulfillment"] == "own_extend":
+            rentals = self.db.all(
+                "SELECT o.rowid rid,o.id,o.rental_number FROM orders o JOIN own_leases l ON l.order_id=o.id "
+                "WHERE o.item_id=? AND o.module='own_rent' AND o.stage='delivered' AND o.market_status!='ROLLED_BACK' "
+                "AND o.problem=0 AND l.state='active' AND l.expires_at>? ORDER BY o.created_at DESC LIMIT 20",
+                (binding["pool_item"], now()),
+            )
+        else:
+            rentals = self.db.all(
+                "SELECT o.rowid AS rid,o.id,o.rental_number FROM orders o "
+                "JOIN bindings b ON b.item_id=o.item_id WHERE o.module='kosell' "
+                "AND o.stage='delivered' AND o.market_status!='ROLLED_BACK' AND o.problem=0 "
+                "AND o.expires_at>? AND b.product_id=? ORDER BY o.created_at DESC LIMIT 20",
+                (now(), binding["product_id"]),
+            )
         await message.answer(
             "Выберите действующую аренду своего магазина для расчёта продления. "
             "Списания и продления не будет. Показаны до 20 последних подходящих аренд."
@@ -322,6 +337,8 @@ class TelegramUI:
             if reason:
                 lines.append(reason)
         rows += [
+            ("📋 Статус обновления", "s:update-status"),
+            ("🧰 Скачать диагностику", "s:diagnostics"),
             (
                 "🔔 Уведомления: " + ("вкл" if self.db.get("update_notifications") else "выкл"),
                 "updates:toggle",
@@ -336,6 +353,8 @@ class TelegramUI:
         data = query.data or ""
         await state.set_state(None)
         try:
+            if await self.seller_callback(message, data, state):
+                return
             if data == "updates:home":
                 return await self.updates_menu(message, state)
             if data == "updates:check":
@@ -395,7 +414,11 @@ class TelegramUI:
                 _, _, binding_row, rental_row = data.split(":")
                 binding = self.db.one("SELECT * FROM bindings WHERE rowid=?", (int(binding_row),))
                 rental = self.db.one("SELECT id FROM orders WHERE rowid=?", (int(rental_row),))
-                if binding and binding["module"] == "extend" and rental:
+                if (
+                    binding
+                    and (binding["module"] == "extend" or binding["fulfillment"] == "own_extend")
+                    and rental
+                ):
                     return await self.show_preview(message, binding["item_id"], rental["id"])
                 return await message.answer("Лот или аренда больше не доступны. Откройте карточку лота.")
             if data == "menu:auto":
@@ -409,13 +432,14 @@ class TelegramUI:
                         [
                             ("🎮 Аренда Steam — KOSell", "plugin:kosell"),
                             ("📦 Собственный склад", "plugin:stock"),
+                            ("🎮 Свой пул аренды", "s:own-catalog"),
                             ("‹ Назад", "menu:home"),
                         ]
                     ),
                 )
             if data.startswith("plugin:"):
                 module = data.split(":")[1]
-                return await self.bindings_menu(message, module)
+                return await self.bindings_menu(message, module, state)
             if data == "menu:analytics":
                 return await message.answer(
                     self.analytics.text(),
@@ -506,16 +530,7 @@ class TelegramUI:
                 await state.update_data(scope=None if scope == "global" else scope)
                 return await self.auto_menu(message, state)
             if data == "scopes":
-                return await message.answer(
-                    "Настройки магазина или отдельного лота",
-                    reply_markup=keyboard(
-                        [("Весь магазин", "scope:global")]
-                        + [
-                            (b["title"][:35] or b["item_id"], "scope:" + b["item_id"])
-                            for b in self.db.all("SELECT * FROM bindings LIMIT 40")
-                        ]
-                    ),
-                )
+                return await self.catalog(message, state, module="", role="scope", page=0)
             if data.startswith("edit:"):
                 key = data.split(":")[1]
                 prompts = {
@@ -549,7 +564,7 @@ class TelegramUI:
                     ),
                 )
             if data == "bindings:all":
-                return await self.bindings_menu(message)
+                return await self.bindings_menu(message, state=state)
             if data == "bind:new":
                 return await self.bind_start(message, state)
             if data.startswith("lot:"):
@@ -579,7 +594,7 @@ class TelegramUI:
                 if not binding:
                     return
                 await state.set_state(Form.stock)
-                await state.update_data(item_id=item_id)
+                await state.update_data(item_id=item_id, warehouse="stock")
                 return await message.answer(
                     "Пришлите UTF-8 TXT или текст: одна строка — один товар. "
                     "Для общей себестоимости добавьте первой строкой «cost=12.50». "
@@ -605,8 +620,8 @@ class TelegramUI:
                     context["chat_id"],
                     context["reply_text"],
                     "operator_reply:" + str(uuid.uuid4()),
+                    purpose="manual_reply",
                 )
-                self.db.execute("UPDATE chats SET last_seller_at=? WHERE id=?", (now(), context["chat_id"]))
                 await state.clear()
                 return await message.answer("Ответ поставлен в очередь.")
             if data.startswith("resume:"):
@@ -725,15 +740,7 @@ class TelegramUI:
                     "или «не списано». Меняется только местный учёт. /cancel"
                 )
             if data == "analytics:items":
-                return await message.answer(
-                    "Выберите товар для отчёта",
-                    reply_markup=keyboard(
-                        [
-                            (b["title"][:40] or b["item_id"], "reportitem:" + b["item_id"])
-                            for b in self.db.all("SELECT * FROM bindings LIMIT 40")
-                        ]
-                    ),
-                )
+                return await self.catalog(message, state, module="", role="report", page=0)
             if data == "report:all" or data.startswith("reportitem:"):
                 return await self.send_report(
                     message, item_id=data[11:] if data.startswith("reportitem:") else None
@@ -788,30 +795,21 @@ class TelegramUI:
             reply_markup=keyboard([("Статус подключения", "menu:account"), ("‹ Назад", "menu:home")]),
         )
 
-    async def bindings_menu(self, message, module=None):
-        rows = self.db.all(
-            "SELECT * FROM bindings" + (" WHERE module=?" if module else ""), (module,) if module else ()
-        )
-        await message.answer(
-            "Привязанные лоты. Сначала создайте лот с ручной выдачей на Playerok.",
-            reply_markup=keyboard(
-                [
-                    (
-                        ("⏸ " if b["paused"] else "📦 ") + (b["title"][:35] or b["item_id"]),
-                        "lot:" + b["item_id"],
-                    )
-                    for b in rows[:40]
-                ]
-                + [("➕ Привязать лот", "bind:new"), ("‹ Назад", "menu:home")]
-            ),
-        )
+    async def bindings_menu(self, message, module=None, state=None):
+        if state:
+            await state.update_data(
+                catalog={"module": module or "", "status": "all", "search": "", "page": 0, "role": "lot"}
+            )
+        return await self.catalog(message, state)
 
     async def lot(self, message, item_id):
         b = self.db.one("SELECT * FROM bindings WHERE item_id=?", (item_id,))
         if not b:
             return
         count = self.db.one("SELECT count(*) n FROM stock WHERE item_id=? AND state='free'", (item_id,))["n"]
+        rid = self.db.one("SELECT rowid rid FROM bindings WHERE item_id=?", (item_id,))["rid"]
         rows = [
+            ("💰 Порог маржи", f"s:margin:{rid}"),
             ("🧪 Проверить сценарий", f"preview:lot:{item_id}"),
             ("▶ Снять ручную паузу" if b["paused"] else "⏸ Ручная пауза", f"lotflag:paused:{item_id}"),
             ("Автовыставление: " + str(bool(b["auto_restore"])), f"lotflag:auto_restore:{item_id}"),
@@ -823,15 +821,34 @@ class TelegramUI:
             ("instruction", "Инструкция"),
             ("bump_interval", "Интервал поднятия"),
         ]:
+            if field == "max_cost" and b["fulfillment"]:
+                continue
             rows.append(("✏ " + label, f"lotedit:{field}:{item_id}"))
-        if b["module"] == "stock":
+        if b["fulfillment"] == "own_rent":
+            count = self.db.one(
+                "SELECT count(*) n FROM own_accounts WHERE item_id=? AND state='free'", (item_id,)
+            )["n"]
+            rows.append(("🎮 Аккаунты пула", f"s:pool:{rid}:0"))
+        elif b["fulfillment"] == "own_extend":
+            rows.append(("🔗 Пул для продления", f"s:pool-target:{rid}:0"))
+        elif b["module"] == "stock":
             rows.append(("📥 Загрузить склад", "stock:" + item_id))
         rows += [("Настройки сообщений этого лота", "scope:" + item_id), ("‹ Назад", "bindings:all")]
         await message.answer(
-            f"{b['title']}\nID: {item_id}\nМодуль: {b['module']}\n"
-            f"Игра KOSell: {b['product_id']}\nЧасов: {b['hours']}\n"
-            f"Лимит: {money(b['max_cost'])}\nСвободных позиций: {count}\n"
-            f"Причина скрытия: {b['hide_reason'] or '—'}",
+            f"{b['title']}\nID: {item_id}\nМодуль: {MODE_NAMES.get(b['fulfillment'] or b['module'], b['module'])}\n"
+            + (
+                f"Игра KOSell: {b['product_id']}\nЛимит закупки: {money(b['max_cost'])}\n"
+                if b["module"] in {"kosell", "extend"}
+                else ""
+            )
+            + f"Часов: {b['hours']}\nСвободных позиций: {count}\n"
+            f"Причина скрытия: {b['hide_reason'] or '—'}\n"
+            + (
+                "Ожидаемая маржа: "
+                + money(self.db.get("margin:" + item_id, {}).get("margin"))
+                + " (без расходов на продвижение).\nПроверено: "
+                + self.engine.expiry(self.db.get("margin:" + item_id, {}).get("at"))
+            ),
             reply_markup=keyboard(rows),
         )
 
@@ -844,23 +861,30 @@ class TelegramUI:
     async def binding_input(self, message, state):
         data = await state.get_data()
         step, b = data["step"], data["binding"]
+        next_step = step + 1
         text = (message.text or "").strip()
         try:
             if step == 0:
                 b["item_id"] = str(uuid.UUID(text))
                 if self.db.one("SELECT item_id FROM bindings WHERE item_id=?", (b["item_id"],)):
                     return await message.answer("Лот уже привязан. Его настройки доступны в списке лотов.")
-                prompt = "Тип выдачи: kosell — аренда, extend — продление, stock — ваш склад."
+                prompt = "Выберите тип выдачи: kosell, extend, stock, own_rent или own_extend."
             elif step == 1:
-                if text not in {"kosell", "extend", "stock"}:
+                if text not in {"kosell", "extend", "stock", "own_rent", "own_extend"}:
                     raise ValueError()
-                b["module"] = text
+                b["fulfillment"] = text if text.startswith("own_") else ""
+                b["module"] = "stock" if text.startswith("own_") else text
                 prompt = "Название лота для меню."
             elif step == 2:
                 if not 1 <= len(text) <= 150:
                     raise ValueError()
                 b["title"] = text
-                prompt = "ID игры KOSell (целое число). Для своего склада: 0."
+                if b.get("fulfillment"):
+                    b.update(product_id=None, max_cost=0)
+                    next_step = 4
+                    prompt = "Длительность аренды / продления в часах."
+                else:
+                    prompt = "ID игры KOSell (целое число). Для своего склада: 0."
             elif step == 3:
                 product = int(text)
                 if product < 0 or (b["module"] != "stock" and product == 0):
@@ -871,7 +895,11 @@ class TelegramUI:
                 b["hours"] = int(text)
                 if not 1 <= b["hours"] <= 8760:
                     raise ValueError()
-                prompt = "Максимальная стоимость закупки, руб. Для своего склада: 0."
+                if b.get("fulfillment"):
+                    next_step = 6
+                    prompt = "Инструкция покупателю (до 1000 символов), либо - без инструкции."
+                else:
+                    prompt = "Максимальная стоимость закупки, руб. Для своего склада: 0."
             elif step == 5:
                 b["max_cost"] = rub(text.replace(",", "."))
                 if b["max_cost"] < 0 or (b["module"] != "stock" and b["max_cost"] == 0):
@@ -882,8 +910,8 @@ class TelegramUI:
                     raise ValueError()
                 b["instruction"] = "" if text == "-" else text
                 self.db.execute(
-                    "INSERT INTO bindings(item_id,module,title,product_id,hours,max_cost,instruction) "
-                    "VALUES (?,?,?,?,?,?,?)",
+                    "INSERT INTO bindings(item_id,module,title,product_id,hours,max_cost,instruction,fulfillment) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
                     tuple(
                         b[k]
                         for k in (
@@ -894,13 +922,24 @@ class TelegramUI:
                             "hours",
                             "max_cost",
                             "instruction",
+                            "fulfillment",
                         )
                     ),
                 )
                 await state.clear()
                 return await self.lot(message, b["item_id"])
-            await state.update_data(step=step + 1, binding=b)
-            await message.answer(prompt)
+            await state.update_data(step=next_step, binding=b)
+            if step == 0:
+                from .seller_ui import MODE_NAMES, buttons
+
+                await message.answer(
+                    prompt,
+                    reply_markup=buttons(
+                        [(label, "s:bindtype:" + mode) for mode, label in MODE_NAMES.items()]
+                    ),
+                )
+            else:
+                await message.answer(prompt)
         except (ValueError, ArithmeticError):
             await message.answer("Не удалось принять значение. Проверьте формат и попробуйте снова. /cancel")
 
@@ -908,6 +947,8 @@ class TelegramUI:
         context = await state.get_data()
         key = context["edit"]
         text = (message.text or "").strip()
+        if key.startswith("s:"):
+            return await self.seller_value(message, state, key, text, context)
         try:
             if key == "template":
                 if not 1 <= len(text) <= 2000:
@@ -1059,8 +1100,19 @@ class TelegramUI:
             cost = None
             if lines and lines[0].startswith("cost="):
                 cost = rub(lines.pop(0)[5:].replace(",", "."))
-            item_id = (await state.get_data())["item_id"]
-            count = self.db.add_stock(item_id, lines, cost)
+            context = await state.get_data()
+            item_id = context["item_id"]
+            warehouse = context.get("warehouse", "stock")
+            if warehouse == "own":
+                lines = [line for line in lines if line.strip()]
+                Rentals(self.engine).add(item_id, lines, cost)
+                count = len(lines)
+            elif warehouse == "bonus":
+                lines = [line for line in lines if line.strip()]
+                Loyalty(self.engine).add(lines, cost)
+                count = len(lines)
+            else:
+                count = self.db.add_stock(item_id, lines, cost)
             await state.clear()
             await message.answer(f"Загружено позиций: {count}. Данные хранятся в зашифрованном виде.")
         except (ValueError, UnicodeError, ArithmeticError):
@@ -1146,7 +1198,7 @@ class TelegramUI:
         filters = {"start": start.timestamp(), "end": end.timestamp()}
         for part in parts[2:]:
             key, value = part.split("=", 1)
-            if key == "module" and value in {"kosell", "stock", "extend"}:
+            if key == "module" and value in {"kosell", "stock", "extend", "own_rent", "own_extend"}:
                 filters[key] = value
             elif key == "item":
                 filters["item_id"] = str(uuid.UUID(value))
@@ -1182,7 +1234,7 @@ class TelegramUI:
             "/status — подключение\n/report — Excel\n/reply ID_ЧАТА текст — ответ с предпросмотром\n"
             "/cancel — отмена формы\n/menu — главное меню\n\n"
             "Покупатель: !помощь, !аренды, !код <номер>, !срок <номер>, !продлить <номер>, "
-            "!инструкция, !оператор.\n\n"
+            "!инструкция, !бонус, !оператор.\n\n"
             "Пауза останавливает закупки и выдачу, связанные лоты снимаются с продажи. "
             "Неопределённые списания и отправки требуют сверки в управлении аккаунтом."
         )

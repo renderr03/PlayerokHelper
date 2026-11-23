@@ -20,8 +20,11 @@ from .db import Database
 from .engine import Engine
 from .kosell import KOSell
 from .listings import Listings
+from .loyalty import Loyalty
+from .maintenance import prune_updates
 from .models import ServiceError, now
 from .playerok import Playerok
+from .rentals import Rentals
 from .telegram_ui import TelegramUI, dispatcher
 from .updater_worker import write
 from .updates import Updates, read_json
@@ -85,6 +88,9 @@ class Runtime:
             self.engine.recover()
             self.recovered = True
         self.updates.consume_result()
+        Rentals(self.engine).tick()
+        if not self.db.get("paused") and self.db.get("live_enabled"):
+            Loyalty(self.engine).tick()
         if getattr(self.config, "updates_enabled", False):
             await self.updates.check()
         if now() - self.db.get("last_readiness", 0) >= 60:
@@ -142,22 +148,105 @@ class Runtime:
                 if not referenced:
                     path.unlink()
 
-    async def loop(self):
+    def guard(self):
+        if self.updates.folder and (self.updates.folder / "maintenance.json").exists():
+            return False
+        if not self.recovered:
+            self.engine.recover()
+            self.recovered = True
+        return True
+
+    async def connections(self):
+        await readiness(self.db, self.engine.market, self.engine.kosell, needs_kosell=needs_kosell(self.db))
+        snapshot = self.db.get("connection_snapshot")
+        Alerts(self.engine).connections(snapshot["services"])
+        if not self.db.get("live_enabled"):
+            await Alerts(self.engine).availability(self.db.all("SELECT * FROM bindings"), None, None, {})
+        self.db.set("last_readiness", now())
+
+    async def orders_cycle(self):
+        if self.db.get("live_enabled") and not self.db.get("paused"):
+            await self.engine.poll_orders()
+            self.db.set("last_poll", now())
+
+    async def chats_cycle(self):
+        if self.db.get("live_enabled") and not self.db.get("paused"):
+            await self.conversations.poll()
+
+    async def listing_cycle(self):
+        if self.db.get("live_enabled"):
+            await self.listings.tick(snapshot=self.db.get("connection_snapshot"))
+
+    async def jobs_cycle(self):
+        await self.engine.run_jobs()
+
+    async def delivery_cycle(self):
+        await self.engine.flush(self.ui.send_admin)
+
+    async def local_cycle(self):
+        self.updates.consume_result()
+        Rentals(self.engine).tick()
+        if self.db.get("live_enabled") and not self.db.get("paused"):
+            Loyalty(self.engine).tick()
+        self.maintenance()
+        result_nonce = self.db.get("update_result_seen")
+        if (
+            self.updates.directory
+            and not self.updates.busy()
+            and (
+                now() - self.db.get("last_update_cleanup", 0) >= 86400
+                or result_nonce != self.db.get("cleanup_result_seen")
+            )
+        ):
+            await asyncio.to_thread(prune_updates, self.updates.directory)
+            self.db.set("last_update_cleanup", now())
+            self.db.set("cleanup_result_seen", result_nonce)
+        self.db.execute("DELETE FROM chat_messages WHERE created_at<?", (now() - 30 * 86400,))
+
+    async def version_cycle(self):
+        if getattr(self.config, "updates_enabled", False):
+            await self.updates.check()
+
+    async def scheduled(self, name, operation, interval):
+        failures = 0
         while True:
+            delay = interval
             try:
-                await self.cycle()
+                if self.guard():
+                    await operation()
+                failures = 0
             except asyncio.CancelledError:
                 raise
-            except ServiceError as exc:
-                self.db.notify("Сверка остановлена: " + exc.code, f"cycle:{exc.code}:{int(now() // 3600)}")
             except Exception as exc:
-                # Never log exception repr, update objects, or HTTP response bodies.
-                logging.getLogger("shopbot").error("Worker failed: %s", type(exc).__name__)
+                failures += 1
+                delay = max(interval, min(300, interval * 2 ** min(failures, 5)))
+                if isinstance(exc, ServiceError):
+                    delay = max(delay, min(3600, exc.retry_after))
+                logging.getLogger("shopbot").error("Worker %s failed: %s", name, type(exc).__name__)
                 self.db.notify(
-                    "Ошибка обработки. Проверьте /status и журнал типов ошибок.",
-                    f"worker_error:{int(now() // 3600)}",
+                    "Фоновая задача " + name + ": временная ошибка. Проверьте /status.",
+                    f"worker:{name}:{int(now() // 3600)}",
                 )
-            await asyncio.sleep(self.config.poll_seconds)
+            await asyncio.sleep(delay)
+
+    async def loop(self):
+        jobs = [
+            ("connections", self.connections, 60),
+            ("orders", self.orders_cycle, self.config.poll_seconds),
+            ("chats", self.chats_cycle, self.config.poll_seconds),
+            ("listings", self.listing_cycle, 60),
+            ("jobs", self.jobs_cycle, self.config.poll_seconds),
+            ("delivery", self.delivery_cycle, 2),
+            ("local", self.local_cycle, 15),
+            ("versions", self.version_cycle, 60),
+        ]
+        tasks = [asyncio.create_task(self.scheduled(*job)) for job in jobs]
+        try:
+            await asyncio.gather(*tasks)
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
 
 async def serve(config: Config):

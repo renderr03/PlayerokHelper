@@ -248,7 +248,7 @@ async def test_updates_menu_confirmation_cancel_and_auth(panel):
     folder = ui.updates.folder
     folder.mkdir()
     (folder / "enabled.json").write_text('{"protocol": 1}')
-    ui.db.set("update_release", {"tag": "v0.4.0", "sha": "b" * 40, "url": "", "body": "notes"})
+    ui.db.set("update_release", {"tag": "v0.5.0", "sha": "b" * 40, "url": "", "body": "notes"})
     await send(callback="updates:offer", user=999)
     assert ui.db.get("update_offer") is None
     await send(callback="updates:offer")

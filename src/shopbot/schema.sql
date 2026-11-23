@@ -60,4 +60,34 @@ CREATE TABLE IF NOT EXISTS audit (
  id INTEGER PRIMARY KEY AUTOINCREMENT, event TEXT NOT NULL, reference TEXT NOT NULL,
  created_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS own_accounts (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, item_id TEXT NOT NULL, label TEXT NOT NULL,
+ ciphertext TEXT NOT NULL, cost INTEGER, state TEXT NOT NULL DEFAULT 'free'
+ CHECK(state IN ('free','reserved','active','reset')), order_id TEXT UNIQUE, expires_at REAL
+);
+CREATE INDEX IF NOT EXISTS own_free ON own_accounts(item_id,state,id);
+CREATE TABLE IF NOT EXISTS own_leases (
+ order_id TEXT PRIMARY KEY REFERENCES orders(id), account_id INTEGER NOT NULL REFERENCES own_accounts(id),
+ ciphertext TEXT NOT NULL, expires_at REAL NOT NULL, state TEXT NOT NULL DEFAULT 'reserved'
+);
+CREATE TABLE IF NOT EXISTS own_extensions (
+ order_id TEXT PRIMARY KEY REFERENCES orders(id), rental_id TEXT NOT NULL REFERENCES own_leases(order_id)
+);
+CREATE TABLE IF NOT EXISTS bonus_stock (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, ciphertext TEXT NOT NULL, cost INTEGER,
+ state TEXT NOT NULL DEFAULT 'free' CHECK(state IN ('free','reserved','used'))
+);
+CREATE TABLE IF NOT EXISTS bonus_claims (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, campaign TEXT NOT NULL, buyer_id TEXT NOT NULL,
+ milestone INTEGER NOT NULL, threshold INTEGER NOT NULL, since REAL NOT NULL,
+ order_id TEXT NOT NULL REFERENCES orders(id), stock_id INTEGER REFERENCES bonus_stock(id),
+ state TEXT NOT NULL DEFAULT 'waiting', cost INTEGER, generation INTEGER NOT NULL DEFAULT 0,
+ exposed INTEGER NOT NULL DEFAULT 0, created_at REAL NOT NULL,
+ UNIQUE(campaign,buyer_id,milestone)
+);
+CREATE TABLE IF NOT EXISTS chat_messages (
+ id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, sender TEXT NOT NULL,
+ ciphertext TEXT NOT NULL, created_at REAL NOT NULL, needs_reply INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS chat_history ON chat_messages(chat_id,created_at);
 

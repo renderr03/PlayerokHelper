@@ -163,7 +163,11 @@ def test_systemd_accepts_update_manager_and_path_units(installation):
 
 
 @pytest.mark.parametrize(
-    "mode,expected", [(None, ["pip", "setup", "install-service"]), ("0", ["pip", "setup"])]
+    "mode,expected",
+    [
+        (None, ["pip", "setup", "telegram-check", "install-service"]),
+        ("0", ["pip", "setup", "telegram-check"]),
+    ],
 )
 def test_shell_installer_defaults_to_service_but_can_opt_out(tmp_path, mode, expected):
     directory = tmp_path / "installer"

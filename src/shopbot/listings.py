@@ -6,6 +6,7 @@ from datetime import datetime
 
 from .alerts import Alerts
 from .engine import Engine
+from .margins import record
 from .models import ServiceError, money, now, rub
 
 
@@ -17,6 +18,13 @@ class Listings:
     async def availability(self, binding, products, balance, quotes=None):
         if self.db.get("paused") or binding["paused"]:
             return "manual_pause"
+        if binding.get("fulfillment") == "own_rent":
+            count = self.db.one(
+                "SELECT count(*) n FROM own_accounts WHERE item_id=? AND state='free'", (binding["item_id"],)
+            )["n"]
+            return "own_pool_empty" if count == 0 else None
+        if binding.get("fulfillment") == "own_extend":
+            return None if binding.get("pool_item") else "own_pool_not_configured"
         if binding["module"] == "stock":
             count = self.db.one(
                 "SELECT count(*) n FROM stock WHERE item_id=? AND state='free'", (binding["item_id"],)
@@ -78,6 +86,7 @@ class Listings:
                 item_id = binding["item_id"]
                 try:
                     item = await self.engine.market.item(item_id)
+                    record(self.engine, binding, item, quotes)
                     intent = self.db.get("visibility_intent:" + item_id)
                     if (
                         intent == "hide"
@@ -156,7 +165,7 @@ class Listings:
             if cost:
                 spent = self.db.one(
                     "SELECT coalesce(sum(amount),0) n FROM expenses "
-                    "WHERE day=? AND state IN ('reserved','paid')",
+                    "WHERE day=? AND kind!='bonus' AND state IN ('reserved','paid')",
                     (day,),
                 )["n"]
                 if (

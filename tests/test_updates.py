@@ -20,7 +20,7 @@ from shopbot.updates import Updates, version_tuple
 
 NONCE = "a" * 32
 SHA = "b" * 40
-TAG = "v0.4.0"
+TAG = "v0.5.0"
 
 
 def transport(*, annotated=False, failure=False):
@@ -51,7 +51,7 @@ async def test_discovery_deduplicates_and_pins_commit(app, tmp_path, annotated):
     db.set("update_check_at", 0)
     await Updates(db, tmp_path, transport=transport()).check()
     assert db.one("SELECT count(*) n FROM outbox WHERE purpose='update'")["n"] == 1
-    assert release["url"] == "https://github.com/renderr03/PlayerokHelper/releases/tag/v0.4.0"
+    assert release["url"] == "https://github.com/renderr03/PlayerokHelper/releases/tag/v0.5.0"
 
 
 async def test_check_errors_keep_cache_and_do_not_expose_response(app, tmp_path):
@@ -181,7 +181,7 @@ def orchestrator_execute(*, fail_prepare=False, bad_boot=False, interrupted=Fals
             value = {
                 "nonce": NONCE,
                 "pid": 999 if bad_boot and not rolled_back else 123,
-                "version": "0.3.0" if rolled_back else "0.4.0",
+                "version": "0.3.0" if rolled_back else "0.5.0",
                 "at": time.time() - 1 + tick * 0.000001,
             }
         elif phase.startswith("finish:"):
@@ -332,13 +332,13 @@ def test_prepare_builds_isolated_environment_without_changing_live_files(
     worker, request, old_sha = prepared_worker
     # A tiny real wheel keeps the integration test offline while exercising pip,
     # venv creation, git checkout and the version check used in production.
-    wheel = tmp_path / "playerokhelper-0.4.0-py3-none-any.whl"
+    wheel = tmp_path / "playerokhelper-0.5.0-py3-none-any.whl"
     records = {
-        "shopbot/__init__.py": '__version__ = "0.4.0"\n',
-        "playerokhelper-0.4.0.dist-info/METADATA": "Metadata-Version: 2.1\nName: PlayerokHelper\nVersion: 0.4.0\n",
-        "playerokhelper-0.4.0.dist-info/WHEEL": "Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        "shopbot/__init__.py": '__version__ = "0.5.0"\n',
+        "playerokhelper-0.5.0.dist-info/METADATA": "Metadata-Version: 2.1\nName: PlayerokHelper\nVersion: 0.5.0\n",
+        "playerokhelper-0.5.0.dist-info/WHEEL": "Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
     }
-    records["playerokhelper-0.4.0.dist-info/RECORD"] = "".join(f"{name},,\n" for name in records)
+    records["playerokhelper-0.5.0.dist-info/RECORD"] = "".join(f"{name},,\n" for name in records)
     with zipfile.ZipFile(wheel, "w") as archive:
         for name, content in records.items():
             archive.writestr(name, content)

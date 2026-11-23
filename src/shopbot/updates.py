@@ -142,6 +142,9 @@ class Updates:
             or offer["sha"] != self.available()["sha"]
         ):
             raise ValueError("Предложение устарело или обновление уже запущено. Проверьте версию снова.")
+        from .maintenance import require_update_space
+
+        require_update_space(self.directory, self.db.path)
         request = {"nonce": nonce, "tag": offer["tag"], "sha": offer["sha"], "created_at": now()}
         request["data_dir"] = str(self.db.path.parent.resolve())
         # Publish a complete file atomically. A hard link gives O_EXCL semantics.

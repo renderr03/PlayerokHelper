@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
+import time
 from importlib.resources import files
 from pathlib import Path
 
@@ -68,6 +70,8 @@ class Playerok:
             },
             transport=transport,
         )
+        self._requests = asyncio.Semaphore(4)
+        self._not_before = 0
         self.user_id = ""
         self.visibility = (
             json.loads(visibility_file.read_text())
@@ -110,6 +114,14 @@ class Playerok:
         await self.client.aclose()
 
     async def graphql(self, operation: str, variables=None, *, query=None, mutation=False):
+        async with self._requests:
+            if time.time() < self._not_before:
+                raise ServiceError(
+                    "playerok_rate_limit", retry_after=max(1, int(self._not_before - time.time()) + 1)
+                )
+            return await self._graphql(operation, variables, query=query, mutation=mutation)
+
+    async def _graphql(self, operation: str, variables=None, *, query=None, mutation=False):
         if query is None:
             name = CONTRACT_NAMES[operation]
             query = files("shopbot").joinpath(f"contracts/{name}.graphql").read_text()
@@ -147,6 +159,13 @@ class Playerok:
                         )
         except httpx.TransportError:
             raise ServiceError("playerok_network", ambiguous=mutation) from None
+        if response.status_code == 429:
+            try:
+                delay = max(1, min(3600, int(response.headers.get("Retry-After", "30"))))
+            except ValueError:
+                delay = 30
+            self._not_before = time.time() + delay
+            raise ServiceError("playerok_rate_limit", retry_after=delay)
         if not response.is_success:
             raise ServiceError(
                 f"playerok_http_{response.status_code}", ambiguous=mutation and response.status_code >= 500

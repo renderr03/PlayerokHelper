@@ -103,7 +103,27 @@ async def preview_delivery(engine, item_id, *, rental_id=None):
                 result.issues.append("Лот не принадлежит подключённому магазину.")
             if item["status"] != "APPROVED":
                 result.issues.append("Лот не находится в активном статусе APPROVED.")
-        if binding["module"] == "stock":
+        if binding.get("fulfillment") == "own_rent":
+            account = db.one(
+                "SELECT cost FROM own_accounts WHERE item_id=? AND state='free' ORDER BY id LIMIT 1",
+                (item_id,),
+            )
+            if not account:
+                result.issues.append("Нет свободных аккаунтов собственного пула.")
+            result.observations.append("Себестоимость выдачи: " + money(account["cost"] if account else None))
+            payload = "[реквизиты собственного аккаунта — скрыты]\nАренда: " + str(binding["hours"]) + " ч."
+        elif binding.get("fulfillment") == "own_extend":
+            target = db.one(
+                "SELECT o.id,l.expires_at,l.state FROM orders o JOIN own_leases l ON l.order_id=o.id "
+                "WHERE o.id=? AND o.item_id=? AND o.module='own_rent' AND o.stage='delivered' "
+                "AND o.market_status!='ROLLED_BACK' AND o.problem=0",
+                (rental_id, binding["pool_item"]),
+            )
+            if not target or target["state"] != "active" or target["expires_at"] <= now():
+                result.issues.append("Выберите действующую аренду собственного пула.")
+            payload = "Аренда продлена до [новый срок]."
+            result.observations.append("Продление собственного пула без закупки у поставщика.")
+        elif binding["module"] == "stock":
             count = db.one("SELECT count(*) n FROM stock WHERE item_id=? AND state='free'", (item_id,))["n"]
             result.observations.append(f"Свободных позиций: {count}")
             if not count:

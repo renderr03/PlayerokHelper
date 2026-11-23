@@ -41,7 +41,9 @@ class Analytics:
         incurred = [
             r
             for r in rows
-            if r["rental_uid"] or r["delivered_at"] or (r["module"] == "stock" and r["stage"] == "sending")
+            if r["rental_uid"]
+            or r["delivered_at"]
+            or (r["module"] in {"stock", "own_rent"} and r["stage"] == "sending")
         ]
         costs = sum(r["cost"] or 0 for r in incurred)
         unknown_ids = {r["id"] for r in confirmed + incurred if r["cost"] is None}
@@ -61,12 +63,35 @@ class Analytics:
             expenses = [e for e in expenses if e["item_id"] == item_id]
         if module:
             bindings = {
-                b["item_id"] for b in self.db.all("SELECT item_id FROM bindings WHERE module=?", (module,))
+                b["item_id"]
+                for b in self.db.all(
+                    "SELECT item_id FROM bindings WHERE coalesce(nullif(fulfillment,''),module)=?", (module,)
+                )
             }
             expenses = [e for e in expenses if e["item_id"] in bindings]
-        promotion = sum(e["amount"] for e in expenses if e["state"] == "paid")
+        promotion = sum(e["amount"] for e in expenses if e["state"] == "paid" and e["kind"] != "bonus")
+        bonus_cost = sum(e["amount"] for e in expenses if e["state"] == "paid" and e["kind"] == "bonus")
+        order_ids = {r["id"] for r in rows}
+        gifts = [g for g in self.db.all("SELECT * FROM bonus_claims") if g["order_id"] in order_ids]
+        bonus_unknown = sum(g["state"] == "sent" and g["cost"] is None for g in gifts)
+        bonus_uncertain = sum(
+            bool(
+                self.db.one(
+                    "SELECT id FROM outbox WHERE purpose=? AND state IN ('sending','uncertain')",
+                    ("bonus:" + str(g["id"]),),
+                )
+            )
+            for g in gifts
+            if g["state"] in {"queued", "review"}
+        )
         reserved = sum(e["amount"] for e in expenses if e["state"] == "reserved")
-        complete = unknown == 0 and commission is not None and reserved == 0
+        complete = (
+            unknown == 0
+            and commission is not None
+            and reserved == 0
+            and bonus_unknown == 0
+            and bonus_uncertain == 0
+        )
         return {
             "orders": len(rows),
             "confirmed": len(confirmed),
@@ -75,9 +100,12 @@ class Analytics:
             "cost": costs,
             "commission": commission,
             "promotion": promotion,
+            "bonus_cost": bonus_cost,
+            "bonus_unknown": bonus_unknown,
+            "bonus_uncertain": bonus_uncertain,
             "reserved": reserved,
             "unknown_costs": unknown,
-            "profit": gross - costs - promotion - (commission or 0),
+            "profit": gross - costs - promotion - bonus_cost - (commission or 0),
             "complete": complete,
         }
 
@@ -88,6 +116,7 @@ class Analytics:
             f"Выручка подтверждённых заказов: {money(s['gross'])}\nВозвраты: {money(s['refunds'])}\n"
             f"Известная себестоимость: {money(s['cost'])}\nКомиссия: {money(s['commission'])}\n"
             f"Продвижение: {money(s['promotion'])}, резерв: {money(s['reserved'])}\n"
+            f"Бонусы: {money(s['bonus_cost'])}; неизвестная стоимость: {s['bonus_unknown']}; спорных отправок: {s['bonus_uncertain']}\n"
             f"{'Прибыль' if s['complete'] else 'Предварительный результат'}: {money(s['profit'])}\n"
             f"Себестоимость неизвестна у заказов: {s['unknown_costs']}\n"
             + (
@@ -193,7 +222,7 @@ class Analytics:
             (
                 [r["id"], r["rental_number"], r["title"], self._date(r["expires_at"]), r["cost"]]
                 for r in rows
-                if r["module"] == "kosell"
+                if r["module"] in {"kosell", "own_rent"}
             ),
         )
         sheet(
@@ -202,7 +231,7 @@ class Analytics:
             (
                 [r["id"], r["target_order_id"], r["stage"], r["cost"], self._date(r["expires_at"])]
                 for r in rows
-                if r["module"] == "extend"
+                if r["module"] in {"extend", "own_extend"}
             ),
         )
         expense_rows = self.db.all(

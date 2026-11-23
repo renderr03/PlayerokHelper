@@ -7,7 +7,9 @@ from zoneinfo import ZoneInfo
 
 from .alerts import Alerts
 from .db import Database
+from .loyalty import Loyalty
 from .models import Deal, ServiceError, money, now, rub, timestamp
+from .rentals import Rentals
 
 TERMINAL = {"delivered", "historical", "ignored", "cancelled", "failed", "review"}
 CONFIRMED = {"CONFIRMED", "CONFIRMED_AUTOMATICALLY"}
@@ -69,7 +71,7 @@ class Engine:
                     deal.title,
                     deal.game,
                     deal.category,
-                    binding["module"] if binding else None,
+                    (binding.get("fulfillment") or binding["module"]) if binding else None,
                     stage,
                     deal.problem,
                     deal.rating,
@@ -188,10 +190,13 @@ class Engine:
                     self.fail(order_id, "listing_paused")
                     return
                 if row["stage"] == "new":
+                    if row["module"] == "own_rent":
+                        Rentals(self).deliver(row, binding)
+                        return
                     if row["module"] == "stock":
                         self.stock_delivery(row, binding)
                         return
-                    if row["module"] == "extend":
+                    if row["module"] in {"extend", "own_extend"}:
                         selection = self.db.one(
                             "SELECT * FROM selections WHERE buyer_id=? AND expires_at>?",
                             (row["buyer_id"], now()),
@@ -209,7 +214,15 @@ class Engine:
                         if not target or target["expires_at"] <= now():
                             self.update(order_id, stage="wait_selection")
                             return
-                        if target["product_id"] != binding["product_id"]:
+                        if (
+                            row["module"] == "own_extend"
+                            and (target["module"] != "own_rent" or target["item_id"] != binding["pool_item"])
+                        ) or (
+                            row["module"] == "extend"
+                            and (
+                                target["module"] != "kosell" or target["product_id"] != binding["product_id"]
+                            )
+                        ):
                             self.update(order_id, stage="wait_selection")
                             return
                         with self.db.transaction():
@@ -225,7 +238,10 @@ class Engine:
                 if row["stage"] == "preparing":
                     await self.prepare_delivery(row, binding)
                 elif row["stage"] == "extension_ready":
-                    await self.extend(row, binding)
+                    if row["module"] == "own_extend":
+                        Rentals(self).extend(row, binding)
+                    else:
+                        await self.extend(row, binding)
             except ServiceError as exc:
                 row = self.order(order_id)
                 if exc.retry_after:
@@ -357,7 +373,7 @@ class Engine:
     def owned_rental(self, buyer_id, reference):
         return self.db.one(
             "SELECT o.*,b.product_id FROM orders o LEFT JOIN bindings b ON b.item_id=o.item_id "
-            "WHERE o.buyer_id=? AND (o.id=? OR o.rental_number=?) AND o.module='kosell' "
+            "WHERE o.buyer_id=? AND (o.id=? OR o.rental_number=?) AND o.module IN ('kosell','own_rent') "
             "AND o.stage='delivered' AND o.market_status!='ROLLED_BACK' AND o.problem=0",
             (buyer_id, reference, reference),
         )
@@ -427,6 +443,7 @@ class Engine:
         with self.db.transaction():
             self.update(order_id, stage="delivered", delivered_at=now())
             self.db.execute("UPDATE stock SET state='used' WHERE order_id=?", (order_id,))
+            Rentals(self).delivered(order_id)
             self.schedule(order_id, "confirm_reminder", now() + 3600)
         self.db.notify(f"Заказ {order_id} выдан\n{row['title']}", f"delivered:{order_id}", order_id)
         if self.db.feature("auto_confirm", row["item_id"]):
@@ -452,6 +469,8 @@ class Engine:
                 self.db.execute(
                     "UPDATE outbox SET state='sent',remote_id=? WHERE id=?", (found.id, row["id"])
                 )
+                if row["purpose"].startswith("bonus:"):
+                    Loyalty(self).sent(row["purpose"])
                 if row["purpose"] == "delivery":
                     await self.finish_delivery(row["order_id"])
         for row in self.db.all(
@@ -461,12 +480,16 @@ class Engine:
                 self.db.execute("UPDATE outbox SET state='cancelled' WHERE id=?", (row["id"],))
                 continue
             if row["channel"] == "playerok":
+                if row["purpose"].startswith("bonus:") and not Loyalty(self).validate_send(row):
+                    continue
                 if self.db.get("paused") or not self.db.get("live_enabled", False):
                     continue
                 if row["order_id"]:
                     order = self.order(row["order_id"])
                     fresh = await self.market.deal(row["order_id"])
                     self.accept(fresh)
+                    if row["purpose"].startswith("bonus:") and not Loyalty(self).validate_send(row):
+                        continue
                     if fresh.status == "ROLLED_BACK" or order["historical"]:
                         continue
                     if fresh.problem and row["purpose"] in {
@@ -479,6 +502,14 @@ class Engine:
                         row["purpose"] == "review_reminder" and fresh.rating is not None
                     ):
                         self.db.execute("UPDATE outbox SET state='cancelled' WHERE id=?", (row["id"],))
+                        continue
+                if row["purpose"] == "delivery":
+                    own = self.db.one(
+                        "SELECT expires_at FROM own_leases WHERE order_id=?", (row["order_id"],)
+                    )
+                    if own and own["expires_at"] <= now():
+                        Rentals(self).tick()
+                        self.fail(row["order_id"], "own_rental_expired_before_delivery", review=True)
                         continue
                 if row["purpose"] == "reply":
                     chat = self.db.one("SELECT * FROM chats WHERE id=?", (row["target"],))
@@ -493,6 +524,8 @@ class Engine:
                 continue
             try:
                 text = self.db.decrypt(row["ciphertext"])
+                if row["purpose"].startswith("bonus:"):
+                    Loyalty(self).expose(row)
                 remote_id = (
                     await self.market.send_message(row["target"], text)
                     if row["channel"] == "playerok"
@@ -515,6 +548,10 @@ class Engine:
             self.db.execute(
                 "UPDATE outbox SET state='sent',remote_id=? WHERE id=?", (str(remote_id), row["id"])
             )
+            if row["purpose"].startswith("bonus:"):
+                Loyalty(self).sent(row["purpose"])
+            if row["purpose"] == "manual_reply":
+                self.db.execute("UPDATE chats SET last_seller_at=? WHERE id=?", (now(), row["target"]))
             if row["purpose"] == "delivery":
                 await self.finish_delivery(row["order_id"])
 

@@ -32,7 +32,11 @@ class Alerts:
             self.db.set("alert:" + key, state)
 
     def stock(self, item_id):
-        count = self.db.one("SELECT count(*) n FROM stock WHERE item_id=? AND state='free'", (item_id,))["n"]
+        binding = self.db.one("SELECT fulfillment FROM bindings WHERE item_id=?", (item_id,))
+        table = "own_accounts" if binding and binding["fulfillment"] == "own_rent" else "stock"
+        count = self.db.one(f"SELECT count(*) n FROM {table} WHERE item_id=? AND state='free'", (item_id,))[
+            "n"
+        ]
         self.observe(
             "stock:" + item_id,
             count <= self.db.get("stock_low"),
@@ -60,6 +64,8 @@ class Alerts:
             if binding["paused"] or self.db.get("paused"):
                 continue
             item_id = binding["item_id"]
+            if binding.get("fulfillment") == "own_extend":
+                continue
             if binding["module"] == "stock":
                 self.stock(item_id)
                 continue

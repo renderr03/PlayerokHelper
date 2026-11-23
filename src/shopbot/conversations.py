@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from .engine import Engine
+from .loyalty import Loyalty
 from .models import Message, ServiceError, now
 
 
@@ -23,7 +24,28 @@ class Conversations:
                 self.db.set("chat_cursor:" + chat["id"], max(m.created_at for m in messages))
         self.ignore_messages()
 
+    def cache_message(self, message):
+        sender = "seller" if message.user_id == self.engine.market.user_id else "buyer"
+        needs = (
+            sender == "buyer"
+            and not message.system
+            and (not message.text.strip().startswith("!") or message.text.strip().startswith("!оператор"))
+        )
+        self.db.execute("INSERT OR IGNORE INTO chats(id) VALUES (?)", (message.chat_id,))
+        self.db.execute(
+            "INSERT OR IGNORE INTO chat_messages VALUES (?,?,?,?,?,?)",
+            (
+                message.id,
+                message.chat_id,
+                sender,
+                self.db.encrypt(message.text[:4000]),
+                message.created_at,
+                int(needs),
+            ),
+        )
+
     async def handle(self, message: Message):
+        self.cache_message(message)
         if self.db.one("SELECT id FROM events WHERE id=?", ("message:" + message.id,)):
             return
         if message.created_at < self.db.get("cutoff", now()):
@@ -128,9 +150,20 @@ class Conversations:
                 "!инструкция — инструкция заказа\n!оператор — позвать продавца",
             )
             return
+        if command == "!бонус":
+            if not self.db.get("loyalty_enabled"):
+                self.reply(message, "Бонусная программа пока выключена.")
+            else:
+                count = Loyalty(self.engine).count(message.user_id)
+                threshold = self.db.get("loyalty_every")
+                self.reply(
+                    message,
+                    f"Завершённых покупок в программе: {count}. Подарок за каждые {threshold} покупок; до следующего: {threshold - count % threshold}.",
+                )
+            return
         if command == "!аренды":
             rows = self.db.all(
-                "SELECT * FROM orders WHERE buyer_id=? AND module='kosell' "
+                "SELECT * FROM orders WHERE buyer_id=? AND module IN ('kosell','own_rent') "
                 "AND stage='delivered' AND market_status!='ROLLED_BACK' ORDER BY created_at DESC",
                 (message.user_id,),
             )
@@ -163,6 +196,13 @@ class Conversations:
         if rental["expires_at"] <= now():
             self.reply(message, "Срок аренды истёк. Для помощи напишите !оператор.")
             return
+        if command == "!код" and rental["module"] == "own_rent":
+            self.db.execute("UPDATE chat_messages SET needs_reply=1 WHERE id=?", (message.id,))
+            self.db.notify(
+                "Запрошен код для собственной аренды " + rental["id"], "own-code:" + message.id, rental["id"]
+            )
+            self.reply(message, "Запрос кода передан продавцу. Также доступна команда !оператор.")
+            return
         if command == "!код":
             throttle = "guard:" + rental["rental_uid"]
             if self.db.get(throttle, 0) > now():
@@ -187,8 +227,8 @@ class Conversations:
             return
         waiting = self.db.all(
             "SELECT o.* FROM orders o JOIN bindings b ON b.item_id=o.item_id WHERE o.buyer_id=? "
-            "AND o.stage='wait_selection' AND b.product_id=? ORDER BY o.created_at",
-            (message.user_id, rental["product_id"]),
+            "AND o.stage='wait_selection' AND ((o.module='extend' AND ?='kosell' AND b.product_id=?) OR (o.module='own_extend' AND ?='own_rent' AND b.pool_item=?)) ORDER BY o.created_at",
+            (message.user_id, rental["module"], rental["product_id"], rental["module"], rental["item_id"]),
         )
         if waiting:
             self.engine.update(waiting[0]["id"], target_order_id=rental["id"], stage="extension_ready")

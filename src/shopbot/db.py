@@ -26,6 +26,12 @@ DEFAULTS = {
     "rental_low": 2,
     "alerts_enabled": True,
     "update_notifications": True,
+    "loyalty_enabled": False,
+    "loyalty_every": 5,
+    "loyalty_since": 0,
+    "loyalty_campaign": "",
+    "bonus_instruction": "",
+    "quick_replies": {},
     "features": {
         k: False
         for k in (
@@ -63,9 +69,18 @@ class Database:
         self.cipher = Fernet(key.encode())
         self.conn = sqlite3.connect(path, isolation_level=None)
         self.conn.row_factory = sqlite3.Row
+        self.conn.create_function("casefold", 1, lambda value: (value or "").casefold(), deterministic=True)
         self.conn.executescript(files("shopbot").joinpath("schema.sql").read_text())
         if "expires_at" not in {r[1] for r in self.conn.execute("PRAGMA table_info(outbox)")}:
             self.conn.execute("ALTER TABLE outbox ADD COLUMN expires_at REAL")
+        for table, column, definition in [
+            ("bindings", "fulfillment", "TEXT NOT NULL DEFAULT ''"),
+            ("bindings", "pool_item", "TEXT"),
+            ("bindings", "margin_min", "INTEGER"),
+            ("chats", "panel_seen_at", "REAL NOT NULL DEFAULT 0"),
+        ]:
+            if column not in {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
         os.chmod(path, 0o600)
         for k, v in DEFAULTS.items():
             self.conn.execute("INSERT OR IGNORE INTO settings VALUES (?,?)", (k, json.dumps(v)))

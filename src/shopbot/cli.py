@@ -98,6 +98,7 @@ def main():
     sub.add_parser("run", help="Telegram panel and worker")
     sub.add_parser("keygen", help="Generate a new encryption key; do not rotate an existing database key")
     sub.add_parser("doctor", help="Read-only connection checks; no purchases or listing changes")
+    sub.add_parser("telegram-check", help="Проверить токен и подключение Telegram без отправки сообщений")
     setup_parser = sub.add_parser("setup", help="Настроить токен бота и Telegram ID администратора в консоли")
     setup_parser.add_argument("--directory", type=Path, default=Path.cwd())
     setup_parser.add_argument(
@@ -147,6 +148,8 @@ def main():
             asyncio.run(serve(config))
         elif args.command == "doctor":
             raise SystemExit(asyncio.run(doctor(config)))
+        elif args.command == "telegram-check":
+            asyncio.run(telegram_check(config))
         elif args.command == "verify-visibility":
             import uuid
 
@@ -162,6 +165,20 @@ def main():
     except (ValueError, OSError, InvalidToken) as exc:
         # Do not leak key material, cookie JSON, URLs with credentials, or transport errors.
         parser.exit(2, "Ошибка настройки: " + type(exc).__name__ + ". Проверьте .env и файлы подключения.\n")
+
+
+async def telegram_check(config):
+    from aiogram import Bot
+
+    bot = Bot(config.token)
+    try:
+        try:
+            profile = await bot.get_me()
+        except Exception:
+            raise ServiceError("telegram_connection_check_failed") from None
+        print("Telegram: подключение подтверждено. Бот @" + (profile.username or "без username"))
+    finally:
+        await bot.session.close()
 
 
 if __name__ == "__main__":
