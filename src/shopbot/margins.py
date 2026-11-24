@@ -11,7 +11,10 @@ def estimate(db, binding, item, quotes):
     fee = db.get("fee_percent")
     cost = None
     mode = binding.get("fulfillment") or binding["module"]
-    if mode == "kosell":
+    if mode in {"stars", "smm"}:
+        quote = db.get("external_margin:" + binding["item_id"], {})
+        cost = quote.get("cost") if now() - quote.get("at", 0) <= 300 else None
+    elif mode == "kosell":
         quote = quotes.get((binding["product_id"], binding["hours"]))
         cost = rub(quote["total_rub"]) if quote else None
     elif mode in {"stock", "own_rent"}:

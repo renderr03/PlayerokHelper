@@ -36,6 +36,7 @@ class Analytics:
     def summary(self, rows=None, start=0, end=None, *, item_id=None, module=None):
         rows = self.orders(start, end, item_id, module) if rows is None else rows
         confirmed = [r for r in rows if r["market_status"] in {"CONFIRMED", "CONFIRMED_AUTOMATICALLY"}]
+        external = {p["order_id"]: p for p in self.db.all("SELECT * FROM provider_orders")}
         gross = sum(r["price"] for r in confirmed)
         refunded = sum(r["price"] for r in rows if r["market_status"] == "ROLLED_BACK")
         incurred = [
@@ -44,6 +45,7 @@ class Analytics:
             if r["rental_uid"]
             or r["delivered_at"]
             or (r["module"] in {"stock", "own_rent"} and r["stage"] == "sending")
+            or external.get(r["id"], {}).get("cost_known")
         ]
         costs = sum(r["cost"] or 0 for r in incurred)
         unknown_ids = {r["id"] for r in confirmed + incurred if r["cost"] is None}
@@ -85,12 +87,22 @@ class Analytics:
             if g["state"] in {"queued", "review"}
         )
         reserved = sum(e["amount"] for e in expenses if e["state"] == "reserved")
+        selected_external = [external[r["id"]] for r in rows if r["id"] in external]
+        external_pending = sum(
+            p["state"] in {"creating", "processing", "review", "partial"} for p in selected_external
+        )
+        native = {}
+        for purchase in selected_external:
+            if purchase["cost_known"] and purchase["currency"]:
+                unit = purchase["currency"]
+                native[unit] = native.get(unit, Decimal(0)) + Decimal(purchase["native_amount"])
         complete = (
             unknown == 0
             and commission is not None
             and reserved == 0
             and bonus_unknown == 0
             and bonus_uncertain == 0
+            and external_pending == 0
         )
         return {
             "orders": len(rows),
@@ -104,6 +116,8 @@ class Analytics:
             "bonus_unknown": bonus_unknown,
             "bonus_uncertain": bonus_uncertain,
             "reserved": reserved,
+            "external_pending": external_pending,
+            "external_native": ", ".join(f"{v} {k}" for k, v in sorted(native.items())) or "—",
             "unknown_costs": unknown,
             "profit": gross - costs - promotion - bonus_cost - (commission or 0),
             "complete": complete,
@@ -117,6 +131,7 @@ class Analytics:
             f"Известная себестоимость: {money(s['cost'])}\nКомиссия: {money(s['commission'])}\n"
             f"Продвижение: {money(s['promotion'])}, резерв: {money(s['reserved'])}\n"
             f"Бонусы: {money(s['bonus_cost'])}; неизвестная стоимость: {s['bonus_unknown']}; спорных отправок: {s['bonus_uncertain']}\n"
+            f"Внешние закупки: {s['external_native']}; в процессе / на сверке: {s['external_pending']}\n"
             f"{'Прибыль' if s['complete'] else 'Предварительный результат'}: {money(s['profit'])}\n"
             f"Себестоимость неизвестна у заказов: {s['unknown_costs']}\n"
             + (
@@ -129,6 +144,7 @@ class Analytics:
     def export(self, path: Path, start=0, end=None, item_id=None, module=None):
         rows = self.orders(start, end, item_id, module)
         summary = self.summary(rows, start, end, item_id=item_id, module=module)
+        external = {p["order_id"]: p for p in self.db.all("SELECT * FROM provider_orders")}
         book = Workbook()
         book.remove(book.active)
 
@@ -161,6 +177,12 @@ class Analytics:
                 "Себестоимость, коп.",
                 "Модуль",
                 "Проблема",
+                "Заказ поставщика",
+                "Статус поставщика",
+                "Затраты в валюте",
+                "Валюта",
+                "Курс, руб.",
+                "Возврат поставщика (справочно)",
             ],
             (
                 [
@@ -174,6 +196,17 @@ class Analytics:
                     r["cost"],
                     r["module"],
                     bool(r["problem"]),
+                    *[
+                        external.get(r["id"], {}).get(key)
+                        for key in (
+                            "remote_id",
+                            "state",
+                            "native_amount",
+                            "currency",
+                            "rub_rate",
+                            "supplier_refund",
+                        )
+                    ],
                 ]
                 for r in rows
             ),

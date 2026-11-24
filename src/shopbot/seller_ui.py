@@ -19,6 +19,8 @@ MODE_NAMES = {
     "extend": "Продление KOSell",
     "own_rent": "Своя аренда",
     "own_extend": "Своё продление",
+    "stars": "Telegram Stars",
+    "smm": "SMM-услуги",
 }
 
 

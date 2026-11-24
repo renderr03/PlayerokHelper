@@ -235,7 +235,7 @@ async def test_extension_preview_selects_existing_rental_and_revalidates(panel):
     assert ui.engine.kosell.extensions == 0
 
 
-async def test_updates_menu_confirmation_cancel_and_auth(panel):
+async def test_updates_menu_confirmation_cancel_and_auth(panel, monkeypatch):
     import json
 
     from shopbot import __version__
@@ -245,12 +245,13 @@ async def test_updates_menu_confirmation_cancel_and_auth(panel):
     assert not session.calls
     await send("/version")
     assert __version__ in session.calls[-1].text
+    monkeypatch.setattr("shopbot.updates.__version__", __version__.split("b")[0])
     folder = ui.updates.folder
     folder.mkdir()
     (folder / "enabled.json").write_text('{"protocol": 1}')
     ui.db.set(
         "update_release",
-        {"tag": "v0.5.0", "sha": "b" * 40, "url": "", "body": "## Изменения\n- **Чаты:** `/inbox`."},
+        {"tag": "v0.6.0", "sha": "b" * 40, "url": "", "body": "## Изменения\n- **Чаты:** `/inbox`."},
     )
     await send("/version")
     assert "• Чаты: /inbox." in session.calls[-1].text

@@ -24,6 +24,7 @@ from . import __version__
 from .analytics import Analytics
 from .checks import binding_fingerprint, connection_snapshot, needs_kosell, preview_delivery
 from .engine import Engine
+from .external_ui import ExternalUI
 from .loyalty import Loyalty
 from .maintenance import update_status
 from .models import ServiceError, money, now, rub, timestamp
@@ -81,7 +82,7 @@ class AdminOnly(BaseMiddleware):
         return await handler(event, data)
 
 
-class TelegramUI(SellerUI):
+class TelegramUI(ExternalUI, SellerUI):
     def __init__(self, bot: Bot, engine: Engine, admins, data_dir, project_dir=None):
         self.bot, self.engine, self.db = bot, engine, engine.db
         self.data_dir = data_dir
@@ -154,6 +155,7 @@ class TelegramUI(SellerUI):
             f"Подключение: {self.db.get('readiness_status', 'не проверено')}\n"
             f"Пауза: {'да' if status['paused'] else 'нет'}\nЗаказов: {status['orders']}\n"
             f"Требуют проверки: {status['review']}\nНеопределённые отправки: {status['uncertain']}\n"
+            f"Внешних заказов в работе: {status['provider_pending']}\nВнешних заказов на сверке: {status['provider_review']}\n"
             f"Последняя успешная сверка: {self.engine.expiry(self.db.get('last_poll'))}"
         )
 
@@ -164,18 +166,41 @@ class TelegramUI(SellerUI):
         )
         bindings = self.db.all("SELECT * FROM bindings ORDER BY rowid")
         source = self.db.get("setup_source") or (
-            "kosell" if any(b["module"] != "stock" for b in bindings) else "stock" if bindings else None
+            "kosell"
+            if any(b["module"] != "stock" for b in bindings)
+            else next(
+                (b["fulfillment"] for b in bindings if b["fulfillment"] in {"stars", "smm"}),
+                "stock" if bindings else None,
+            )
+        )
+        external_ready = (
+            any(
+                self.engine.external.enabled(p)
+                for p in self.db.all("SELECT * FROM providers")
+                if (p["preset"] == "split") == (source == "stars")
+            )
+            if source in {"stars", "smm"}
+            else False
         )
         playerok_ok = snapshot["services"]["playerok"]["ok"]
         kosell_ok = snapshot["services"].get("kosell", {}).get("ok", False)
         visibility_ok = playerok_ok and not any(i.startswith("visibility_") for i in snapshot["issues"])
         last = self.db.get("last_preview", {})
         checked = next((b for b in bindings if b["item_id"] == last.get("item_id")), None)
+        checked_hash = binding_fingerprint(checked) if checked else None
+        if checked and checked["fulfillment"] in {"stars", "smm"}:
+            try:
+                ext = self.engine.external.binding(checked["item_id"])
+                checked_hash = self.engine.external.fingerprint(
+                    ext, self.engine.external.provider(ext["provider_id"])
+                )
+            except ValueError:
+                checked_hash = None
         preview_ok = (
             checked
             and last.get("ok")
             and now() - last.get("at", 0) < 60
-            and binding_fingerprint(checked) == last.get("binding")
+            and checked_hash == last.get("binding")
         )
 
         def mark(ok):
@@ -184,8 +209,12 @@ class TelegramUI(SellerUI):
         lines = [
             f"🧙 Мастер первого запуска · PlayerokHelper {__version__}",
             f"{mark(playerok_ok)} 1. Подключить Playerok",
-            f"{mark(source and (source == 'stock' or kosell_ok))} 2. Источник: "
-            + ({"stock": "свой склад", "kosell": "KOSell"}.get(source, "выберите ниже")),
+            f"{mark(source and (source == 'stock' or external_ready or (source == 'kosell' and kosell_ok)))} 2. Источник: "
+            + (
+                {"stock": "свой склад", "kosell": "KOSell", "stars": "Telegram Stars", "smm": "SMM"}.get(
+                    source, "выберите ниже"
+                )
+            ),
             f"{mark(visibility_ok)} 3. Проверить скрытие и восстановление",
             f"{mark(bindings)} 4. Привязать первый лот",
             f"{mark(preview_ok)} 5. Проверить сценарий в карточке лота (актуальность 60 секунд)",
@@ -205,9 +234,13 @@ class TelegramUI(SellerUI):
         rows = [
             ("📦 Использовать свой склад", "setup:source:stock"),
             ("🎮 Использовать KOSell", "setup:source:kosell"),
+            ("Telegram Stars", "setup:source:stars"),
+            ("SMM-услуги", "setup:source:smm"),
             ("🔄 Проверить подключение", "setup:home"),
             ("➕ Привязать лот", "bind:new"),
         ]
+        if source in {"stars", "smm"}:
+            rows.append(("Настроить поставщика", "x:home:" + source))
         rows += [
             ("🧪 " + (b["title"][:30] or b["item_id"]), "preview:lot:" + b["item_id"]) for b in bindings[:10]
         ]
@@ -308,7 +341,11 @@ class TelegramUI(SellerUI):
             lines.append(
                 "Новая версия пока не найдена. Нажмите «Проверить сейчас» для актуального результата."
             )
-        if not self.updates.enabled():
+        if "b" in __version__:
+            lines.append(
+                "Это бета-сборка. Обновление кнопкой отключено; переход на стабильную версию выполняется вручную после её выпуска."
+            )
+        elif not self.updates.enabled():
             lines.append(
                 "Обновление кнопкой требует однократной установки v0.3.0+ со службой systemd. "
                 "Для Docker и ручного запуска обновляйте установку обычным способом."
@@ -353,6 +390,8 @@ class TelegramUI(SellerUI):
         data = query.data or ""
         await state.set_state(None)
         try:
+            if await self.external_callback(message, data, state):
+                return
             if await self.seller_callback(message, data, state):
                 return
             if data == "updates:home":
@@ -392,7 +431,7 @@ class TelegramUI(SellerUI):
                 return await self.setup_menu(message, state)
             if data.startswith("setup:source:"):
                 source = data.rsplit(":", 1)[1]
-                if source not in {"stock", "kosell"}:
+                if source not in {"stock", "kosell", "stars", "smm"}:
                     return
                 self.db.set("setup_source", source)
                 return await self.setup_menu(message, state)
@@ -433,6 +472,8 @@ class TelegramUI(SellerUI):
                             ("🎮 Аренда Steam — KOSell", "plugin:kosell"),
                             ("📦 Собственный склад", "plugin:stock"),
                             ("🎮 Свой пул аренды", "s:own-catalog"),
+                            ("Telegram Stars", "x:home:stars"),
+                            ("SMM-услуги", "x:home:smm"),
                             ("‹ Назад", "menu:home"),
                         ]
                     ),
@@ -674,6 +715,12 @@ class TelegramUI(SellerUI):
                 row = self.engine.order(data[6:])
                 if not row or row["stage"] != "failed":
                     return await message.answer("Неопределённые операции сначала нужно сверить.")
+                if row["module"] in {"stars", "smm"} and self.db.one(
+                    "SELECT order_id FROM provider_orders WHERE order_id=?", (row["id"],)
+                ):
+                    return await message.answer(
+                        "Откройте внешний заказ и сверку. Повторная закупка здесь заблокирована."
+                    )
                 stage = "preparing" if row["rental_uid"] else "rent_pending" if row["idem_key"] else "new"
                 if row["module"] == "extend" and row["target_order_id"]:
                     stage = "extension_ready"
@@ -806,6 +853,8 @@ class TelegramUI(SellerUI):
         b = self.db.one("SELECT * FROM bindings WHERE item_id=?", (item_id,))
         if not b:
             return
+        if b["fulfillment"] in {"stars", "smm"}:
+            return await self.external_lot(message, item_id)
         count = self.db.one("SELECT count(*) n FROM stock WHERE item_id=? AND state='free'", (item_id,))["n"]
         rid = self.db.one("SELECT rowid rid FROM bindings WHERE item_id=?", (item_id,))["rid"]
         rows = [
@@ -868,8 +917,17 @@ class TelegramUI(SellerUI):
                 b["item_id"] = str(uuid.UUID(text))
                 if self.db.one("SELECT item_id FROM bindings WHERE item_id=?", (b["item_id"],)):
                     return await message.answer("Лот уже привязан. Его настройки доступны в списке лотов.")
-                prompt = "Выберите тип выдачи: kosell, extend, stock, own_rent или own_extend."
+                prompt = "Выберите тип выдачи кнопкой: аренда, склад, Telegram Stars или SMM."
             elif step == 1:
+                if text in {"stars", "smm"}:
+                    await state.clear()
+                    return await self.external_prompt(
+                        message,
+                        state,
+                        "new_title",
+                        "Название лота для меню, до 150 символов.",
+                        external_wizard={"mode": text, "item_id": b["item_id"]},
+                    )
                 if text not in {"kosell", "extend", "stock", "own_rent", "own_extend"}:
                     raise ValueError()
                 b["fulfillment"] = text if text.startswith("own_") else ""
@@ -947,6 +1005,8 @@ class TelegramUI(SellerUI):
         context = await state.get_data()
         key = context["edit"]
         text = (message.text or "").strip()
+        if key.startswith("x:"):
+            return await self.external_value(message, state, key, text, context)
         if key.startswith("s:"):
             return await self.seller_value(message, state, key, text, context)
         try:
@@ -1158,11 +1218,19 @@ class TelegramUI(SellerUI):
         if not row:
             return
         rows = [("✉ Ответить", "reply:" + order_id), ("▶ Возобновить автоответы", "resume:" + order_id)]
+        if row["module"] in {"stars", "smm"} and self.db.one(
+            "SELECT order_id FROM provider_orders WHERE order_id=?", (order_id,)
+        ):
+            rid = self.db.one("SELECT rowid rid FROM orders WHERE id=?", (order_id,))["rid"]
+            rows.append(("Внешний заказ и сверка", f"x:order:{rid}"))
         if row["stage"] == "delivered":
             rows.append(("✅ Отметить выполнение", "sent:" + order_id))
         if row["market_status"] != "ROLLED_BACK":
             rows.append(("↩ Возврат", "refund:" + order_id))
-        if row["stage"] == "failed":
+        if row["stage"] == "failed" and (
+            row["module"] not in {"stars", "smm"}
+            or not self.db.one("SELECT order_id FROM provider_orders WHERE order_id=?", (order_id,))
+        ):
             rows.append(("Повторить безопасную обработку", "retry:" + order_id))
         if row["stage"] == "review" and row["module"] == "extend":
             rows.append(("Сверить выполненное продление", "reconcile:" + order_id))
@@ -1198,7 +1266,15 @@ class TelegramUI(SellerUI):
         filters = {"start": start.timestamp(), "end": end.timestamp()}
         for part in parts[2:]:
             key, value = part.split("=", 1)
-            if key == "module" and value in {"kosell", "stock", "extend", "own_rent", "own_extend"}:
+            if key == "module" and value in {
+                "kosell",
+                "stock",
+                "extend",
+                "own_rent",
+                "own_extend",
+                "stars",
+                "smm",
+            }:
                 filters[key] = value
             elif key == "item":
                 filters["item_id"] = str(uuid.UUID(value))
@@ -1234,7 +1310,7 @@ class TelegramUI(SellerUI):
             "/status — подключение\n/report — Excel\n/reply ID_ЧАТА текст — ответ с предпросмотром\n"
             "/cancel — отмена формы\n/menu — главное меню\n\n"
             "Покупатель: !помощь, !аренды, !код <номер>, !срок <номер>, !продлить <номер>, "
-            "!инструкция, !бонус, !оператор.\n\n"
+            "!инструкция, !бонус, !оператор, !получатель <заказ> <данные>, !подтвердить <код>, !заказ <номер>.\n\n"
             "Пауза останавливает закупки и выдачу, связанные лоты снимаются с продажи. "
             "Неопределённые списания и отправки требуют сверки в управлении аккаунтом."
         )

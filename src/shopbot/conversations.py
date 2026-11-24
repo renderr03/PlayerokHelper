@@ -83,6 +83,11 @@ class Conversations:
         )
         item_id = order["item_id"] if order else None
         text = message.text.strip()
+        external_reply = await self.engine.external.message(message)
+        if external_reply is not None:
+            self.reply(message, external_reply, "external")
+            self.done(message)
+            return
         if text.startswith("!"):
             await self.command(message)
             self.done(message)
@@ -146,6 +151,8 @@ class Conversations:
             self.reply(
                 message,
                 "!аренды — ваши аренды\n!код <номер> — Steam Guard\n"
+                "!получатель <заказ> <данные> — получатель Stars или ссылка SMM\n"
+                "!подтвердить <код> — подтвердить получателя\n!заказ <номер> — статус внешней услуги\n"
                 "!срок <номер> — срок аренды\n!продлить <номер> — выбрать аренду для продления\n"
                 "!инструкция — инструкция заказа\n!оператор — позвать продавца",
             )

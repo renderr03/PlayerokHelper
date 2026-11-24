@@ -112,6 +112,7 @@ class Runtime:
                 await self.engine.poll_orders()
                 await self.conversations.poll()
                 await self.engine.run_jobs()
+                await self.engine.external.tick()
                 self.db.set("last_poll", now())
         await self.engine.flush(self.ui.send_admin)
         self.maintenance()
@@ -183,6 +184,9 @@ class Runtime:
     async def delivery_cycle(self):
         await self.engine.flush(self.ui.send_admin)
 
+    async def external_cycle(self):
+        await self.engine.external.tick()
+
     async def local_cycle(self):
         self.updates.consume_result()
         Rentals(self.engine).tick()
@@ -237,6 +241,7 @@ class Runtime:
             ("listings", self.listing_cycle, 60),
             ("jobs", self.jobs_cycle, self.config.poll_seconds),
             ("delivery", self.delivery_cycle, 2),
+            ("providers", self.external_cycle, 15),
             ("local", self.local_cycle, 15),
             ("versions", self.version_cycle, 60),
         ]

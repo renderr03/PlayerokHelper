@@ -91,3 +91,32 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 );
 CREATE INDEX IF NOT EXISTS chat_history ON chat_messages(chat_id,created_at);
 
+CREATE TABLE IF NOT EXISTS providers (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, preset TEXT NOT NULL UNIQUE, title TEXT NOT NULL,
+ token TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1, checked_revision INTEGER NOT NULL DEFAULT 0,
+ enabled INTEGER NOT NULL DEFAULT 0, settings TEXT NOT NULL DEFAULT '{}', checked_at REAL
+);
+CREATE TABLE IF NOT EXISTS external_bindings (
+ item_id TEXT PRIMARY KEY REFERENCES bindings(item_id), provider_id INTEGER NOT NULL REFERENCES providers(id),
+ service_id TEXT NOT NULL DEFAULT '', quantity INTEGER NOT NULL CHECK(quantity>0),
+ payment_method TEXT NOT NULL DEFAULT 'balance', domains TEXT NOT NULL DEFAULT '[]',
+ max_native TEXT NOT NULL, currency TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS provider_orders (
+ order_id TEXT PRIMARY KEY REFERENCES orders(id), provider_id INTEGER NOT NULL REFERENCES providers(id),
+ revision INTEGER NOT NULL, state TEXT NOT NULL DEFAULT 'waiting_input',
+ destination TEXT, confirmation TEXT UNIQUE, confirm_expires REAL,
+ quote TEXT, snapshot TEXT NOT NULL, remote_id TEXT,
+ native_amount TEXT, currency TEXT, rub_rate TEXT, cost_rub INTEGER,
+ cost_known INTEGER NOT NULL DEFAULT 0, supplier_refund TEXT NOT NULL DEFAULT '0',
+ remains INTEGER,
+ error TEXT, next_poll REAL NOT NULL DEFAULT 0, created_at REAL NOT NULL, updated_at REAL NOT NULL,
+ UNIQUE(provider_id,remote_id)
+);
+CREATE INDEX IF NOT EXISTS provider_queue ON provider_orders(state,next_poll);
+CREATE TABLE IF NOT EXISTS provider_actions (
+ order_id TEXT NOT NULL REFERENCES provider_orders(order_id), kind TEXT NOT NULL,
+ state TEXT NOT NULL, remote_id TEXT, created_at REAL NOT NULL,
+ PRIMARY KEY(order_id,kind)
+);
+

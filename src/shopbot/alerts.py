@@ -64,7 +64,7 @@ class Alerts:
             if binding["paused"] or self.db.get("paused"):
                 continue
             item_id = binding["item_id"]
-            if binding.get("fulfillment") == "own_extend":
+            if binding.get("fulfillment") in {"own_extend", "stars", "smm"}:
                 continue
             if binding["module"] == "stock":
                 self.stock(item_id)

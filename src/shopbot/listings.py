@@ -18,6 +18,12 @@ class Listings:
     async def availability(self, binding, products, balance, quotes=None):
         if self.db.get("paused") or binding["paused"]:
             return "manual_pause"
+        if binding.get("fulfillment") in {"stars", "smm"}:
+            try:
+                await self.engine.external.preview(self.engine.external.binding(binding["item_id"]))
+                return None
+            except (ServiceError, ValueError, KeyError, TypeError, ArithmeticError):
+                return "external_provider_not_ready"
         if binding.get("fulfillment") == "own_rent":
             count = self.db.one(
                 "SELECT count(*) n FROM own_accounts WHERE item_id=? AND state='free'", (binding["item_id"],)

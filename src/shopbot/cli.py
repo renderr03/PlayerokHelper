@@ -96,6 +96,10 @@ def main():
     parser = argparse.ArgumentParser(description="PlayerokHelper — автоматизация Playerok и KOSell")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("run", help="Telegram panel and worker")
+    provider_parser = sub.add_parser(
+        "provider-setup", help="Configure an external provider with a hidden token prompt"
+    )
+    provider_parser.add_argument("--preset", required=True, choices=["split", "twiboost", "vexboost", "jap"])
     sub.add_parser("keygen", help="Generate a new encryption key; do not rotate an existing database key")
     sub.add_parser("doctor", help="Read-only connection checks; no purchases or listing changes")
     sub.add_parser("telegram-check", help="Проверить токен и подключение Telegram без отправки сообщений")
@@ -146,6 +150,26 @@ def main():
     try:
         if args.command == "run":
             asyncio.run(serve(config))
+        elif args.command == "provider-setup":
+            from .external import save_provider
+            from .setup_console import Console, console
+
+            if any(
+                (config.project_dir / ".updates" / name).exists()
+                for name in ("request.json", "maintenance.json")
+            ):
+                raise ValueError("Дождитесь завершения обновления")
+            db = Database(config.data_dir / "shop.sqlite", config.encryption_key)
+            try:
+                with console() as (input_stream, output_stream):
+                    terminal = Console(input_stream, output_stream)
+                    token = terminal.ask("Ключ поставщика (ввод скрыт): ", secret=True)
+                    save_provider(db, args.preset, token)
+                    terminal.write(
+                        "Ключ сохранён зашифрованно. В Telegram откройте Плагины, проверьте подключение и включите поставщика."
+                    )
+            finally:
+                db.close()
         elif args.command == "doctor":
             raise SystemExit(asyncio.run(doctor(config)))
         elif args.command == "telegram-check":

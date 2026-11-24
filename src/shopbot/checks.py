@@ -103,7 +103,18 @@ async def preview_delivery(engine, item_id, *, rental_id=None):
                 result.issues.append("Лот не принадлежит подключённому магазину.")
             if item["status"] != "APPROVED":
                 result.issues.append("Лот не находится в активном статусе APPROVED.")
-        if binding.get("fulfillment") == "own_rent":
+        if binding.get("fulfillment") in {"stars", "smm"}:
+            external = engine.external.binding(item_id)
+            result.binding = engine.external.fingerprint(
+                external, engine.external.provider(external["provider_id"])
+            )
+            await engine.external.preview(external, readonly=True)
+            result.observations.append(
+                f"Внешняя услуга: {binding['fulfillment']}, количество {external['quantity']}."
+            )
+            result.observations.append("Получатель, точная цена и баланс проверяются перед закупкой.")
+            payload = "[подтверждённый поставщиком результат выполнения внешнего заказа]"
+        elif binding.get("fulfillment") == "own_rent":
             account = db.one(
                 "SELECT cost FROM own_accounts WHERE item_id=? AND state='free' ORDER BY id LIMIT 1",
                 (item_id,),

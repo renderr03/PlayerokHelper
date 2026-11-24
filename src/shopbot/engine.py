@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 from .alerts import Alerts
 from .db import Database
+from .external import MODES, External
 from .loyalty import Loyalty
 from .models import Deal, ServiceError, money, now, rub, timestamp
 from .rentals import Rentals
@@ -21,6 +22,7 @@ class Engine:
         self.tz = ZoneInfo(timezone)
         self._locks: dict[str, asyncio.Lock] = {}
         self._purchase_lock = asyncio.Lock()
+        self.external = External(self)
 
     def order(self, order_id):
         return self.db.one("SELECT * FROM orders WHERE id=?", (order_id,))
@@ -188,6 +190,9 @@ class Engine:
                     return
                 if binding["paused"] and row["stage"] == "new":
                     self.fail(order_id, "listing_paused")
+                    return
+                if row["module"] in MODES:
+                    await self.external.process(row, self.external.binding(row["item_id"]))
                     return
                 if row["stage"] == "new":
                     if row["module"] == "own_rent":
@@ -441,7 +446,7 @@ class Engine:
         if row["stage"] == "delivered":
             return
         with self.db.transaction():
-            self.update(order_id, stage="delivered", delivered_at=now())
+            self.update(order_id, stage="delivered", delivered_at=row["delivered_at"] or now())
             self.db.execute("UPDATE stock SET state='used' WHERE order_id=?", (order_id,))
             Rentals(self).delivered(order_id)
             self.schedule(order_id, "confirm_reminder", now() + 3600)
@@ -626,6 +631,7 @@ class Engine:
                 await self.process(row["id"])
 
     def recover(self):
+        self.external.recover()
         self.db.execute("UPDATE outbox SET state='uncertain' WHERE state='sending'")
         for row in self.db.all("SELECT id FROM orders WHERE stage='extending'"):
             self.fail(row["id"], "extension_interrupted_check_provider", review=True)
@@ -642,6 +648,12 @@ class Engine:
 
     def diagnostic(self):
         return {
+            "provider_pending": self.db.one(
+                "SELECT count(*) n FROM provider_orders WHERE state IN ('ready','creating','processing')"
+            )["n"],
+            "provider_review": self.db.one(
+                "SELECT count(*) n FROM provider_orders WHERE state IN ('review','partial')"
+            )["n"],
             "orders": self.db.one("SELECT count(*) n FROM orders")["n"],
             "review": self.db.one("SELECT count(*) n FROM orders WHERE stage='review'")["n"],
             "uncertain": self.db.one("SELECT count(*) n FROM outbox WHERE state='uncertain'")["n"],

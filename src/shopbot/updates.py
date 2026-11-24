@@ -48,6 +48,14 @@ def version_tuple(value):
     return tuple(map(int, match.groups()))
 
 
+def version_rank(value):
+    match = re.fullmatch(r"v?(\d+\.\d+\.\d+)(?:b([1-9]\d*))?", value)
+    if not match:
+        raise ValueError("invalid_version")
+    base = version_tuple(match[1])
+    return (*base, -1, int(match[2])) if match[2] else (*base, 0, 0)
+
+
 def read_json(path, default=None):
     try:
         if path.stat().st_size > 100_000:
@@ -70,11 +78,13 @@ class Updates:
     def available(self):
         release = self.db.get("update_release")
         try:
-            return release if release and version_tuple(release["tag"]) > version_tuple(__version__) else None
+            return release if release and version_rank(release["tag"]) > version_rank(__version__) else None
         except (ValueError, KeyError, TypeError):
             return None
 
     def enabled(self):
+        if re.fullmatch(r"\d+\.\d+\.\d+b\d+", __version__):
+            return False
         value = read_json(self.folder / "enabled.json", {}) if self.folder else {}
         return isinstance(value, dict) and value.get("protocol") == 1
 
@@ -107,7 +117,7 @@ class Updates:
                 version_tuple(tag)
                 if release.get("draft") or release.get("prerelease"):
                     raise ValueError()
-                if version_tuple(tag) <= version_tuple(__version__):
+                if version_rank(tag) <= version_rank(__version__):
                     self.db.set("update_release", None)
                     self.db.set("update_check_error", None)
                     return None
