@@ -31,6 +31,11 @@ from .loyalty import Loyalty
 from .maintenance import update_status
 from .models import ServiceError, money, now, rub, timestamp
 from .navigation import NavigationMessages, PanelNavigation
+from .navigation import context as panel_context
+from .presentation import Cards
+from .presentation import markup as card_markup
+from .presentation import price as card_price
+from .presentation import safe as safe_html
 from .rentals import Rentals
 from .seller_ui import MODE_NAMES, SellerUI
 from .updates import Updates, read_json, release_summary
@@ -90,14 +95,16 @@ class TelegramUI(AccountUI, ExternalUI, SellerUI):
         self.bot, self.engine, self.db = bot, engine, engine.db
         self.data_dir = data_dir
         self.analytics = Analytics(self.db)
+        self.cards = Cards(engine)
         self.updates = Updates(self.db, project_dir)
         self.router = Router()
         maintenance = self.updates.folder / "maintenance.json" if self.updates.folder else None
         self.router.message.outer_middleware(AdminOnly(admins, maintenance))
         self.router.callback_query.outer_middleware(AdminOnly(admins, maintenance))
         self.init_connections()
-        self.router.message.outer_middleware(PanelNavigation())
-        self.router.callback_query.outer_middleware(PanelNavigation())
+        self.panels = {}
+        self.router.message.outer_middleware(PanelNavigation(self.panels, self.db))
+        self.router.callback_query.outer_middleware(PanelNavigation(self.panels, self.db))
         self.bot.session.middleware(NavigationMessages())
         self.register()
 
@@ -419,6 +426,14 @@ class TelegramUI(AccountUI, ExternalUI, SellerUI):
         await query.answer()
         message = query.message
         data = query.data or ""
+        if data.startswith("card:"):
+            data = self.cards.route(data)
+            if data is None:
+                return await message.answer("Это событие больше не доступно. Откройте рабочее окно.")
+        if not data.startswith("reply_send:"):
+            # Navigating away invalidates a reply preview before another chat can
+            # become the target of a delayed click from the previous screen.
+            await state.update_data(reply_nonce=None, reply_text=None)
         if data == "ui:cancel":
             return await self.cancel(message, state)
         if data == "ui:back":
@@ -1239,7 +1254,7 @@ class TelegramUI(AccountUI, ExternalUI, SellerUI):
         parts = (message.text or "").split(maxsplit=2)
         if len(parts) < 3 or not self.db.one("SELECT id FROM chats WHERE id=?", (parts[1],)):
             return await message.answer("Выберите чат в рабочем окне и нажмите «Ответить».")
-        await state.update_data(chat_id=parts[1])
+        await state.update_data(chat_id=parts[1], reply_nonce=None, reply_text=None)
         await self.reply_preview(message, state, parts[2])
 
     async def reply_input(self, message, state):
@@ -1300,17 +1315,36 @@ class TelegramUI(AccountUI, ExternalUI, SellerUI):
                 )
             ],
         )
-        events = self.db.all(
-            "SELECT event FROM audit WHERE reference=? ORDER BY created_at DESC LIMIT 5", (order_id,)
+        card = self.cards.order(order_id, "details")
+        market_status = {
+            "PAID": "Оплачен",
+            "SENT": "Ожидает подтверждения покупателя",
+            "CONFIRMED": "Получен покупателем",
+            "CONFIRMED_AUTOMATICALLY": "Подтверждён автоматически",
+            "ROLLED_BACK": "Средства возвращены",
+        }.get(row["market_status"], row["market_status"])
+        stage = {
+            "new": "Ожидает обработки",
+            "rent_pending": "Закупка аренды",
+            "preparing": "Подготовка доступа",
+            "sending": "Отправка покупателю",
+            "delivered": "Выдан",
+            "cancelled": "Отменён",
+            "review": "Нужна сверка",
+            "failed": "Нужна проверка",
+            "historical": "Из истории",
+            "ignored": "Нет настроенной выдачи",
+            "wait_selection": "Ожидается выбор покупателя",
+            "extending": "Продление аренды",
+            "extension_ready": "Готов к продлению",
+        }.get(row["stage"], row["stage"])
+        text = (
+            card.text
+            + f"\n\n<b>Статус:</b> {safe_html(market_status)}\n<b>Выдача:</b> {safe_html(stage)}\n<b>Закупка:</b> {card_price(row['cost'])}"
         )
-        await message.answer(
-            f"Заказ {order_id}\n{row['title']}\nПокупатель: {row['buyer_name']}\n"
-            f"Статус Playerok: {row['market_status']}\nВыдача: {row['stage']}\n"
-            f"Цена: {money(row['price'])}\nЗакупка: {money(row['cost'])}\n"
-            f"Ошибка: {row['error'] or '—'}\n"
-            f"Последние действия: {', '.join(e['event'] for e in events) or '—'}",
-            reply_markup=markup,
-        )
+        if row["error"]:
+            text += "\n<b>Требует внимания:</b> " + safe_html(row["error"], 120)
+        await message.answer(text, parse_mode="HTML", disable_web_page_preview=True, reply_markup=markup)
 
     def parse_filters(self, text):
         parts = text.split()
@@ -1381,14 +1415,47 @@ class TelegramUI(AccountUI, ExternalUI, SellerUI):
         )
 
     async def send_admin(self, target, text, order_id=None, purpose="message"):
+        token = panel_context.set(None)
+        try:
+            return await self._send_admin(target, text, order_id, purpose)
+        finally:
+            panel_context.reset(token)
+
+    async def _send_admin(self, target, text, order_id, purpose):
         try:
             if purpose == "report":
                 path = self.data_dir / "reports" / text
                 if path.name != text or not path.is_file():
                     raise ServiceError("report_missing")
                 result = await self.bot.send_document(
-                    int(target), BufferedInputFile(path.read_bytes(), filename=text)
+                    int(target),
+                    BufferedInputFile(path.read_bytes(), filename=text),
+                    caption=self.db.decrypt(self.db.get("report_caption:" + text))
+                    if self.db.get("report_caption:" + text)
+                    else "📊 Отчёт магазина",
+                    parse_mode="HTML",
+                    reply_markup=card_markup(
+                        [[("📈 Аналитика", "card:analytics"), ("⚙️ Настройки отчёта", "card:reports")]]
+                    ),
                 )
+            elif purpose == "card:message" or purpose.startswith("card:order:"):
+                card = (
+                    self.cards.message(text)
+                    if purpose == "card:message"
+                    else self.cards.order(order_id, purpose.rsplit(":", 1)[1])
+                )
+                if card:
+                    result = await self.bot.send_message(
+                        int(target),
+                        card.text,
+                        parse_mode="HTML",
+                        disable_web_page_preview=True,
+                        reply_markup=card.keyboard,
+                    )
+                else:
+                    result = await self.bot.send_message(
+                        int(target), text[:4000], reply_markup=keyboard([("Рабочее окно", "s:inbox:new:0")])
+                    )
             else:
                 markup = (
                     keyboard([("Открыть заказ", "order:" + order_id)])

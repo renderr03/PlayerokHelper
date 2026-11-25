@@ -304,6 +304,8 @@ class Playerok:
                         d.get("text") or "",
                         created,
                         bool(d.get("event") or d.get("isAutoResponse")),
+                        str((d.get("user") or {}).get("username") or "")[:80],
+                        bool(d.get("isAutoResponse")),
                     )
                 )
             if rows and all(timestamp(d["createdAt"]) < since for d in rows):

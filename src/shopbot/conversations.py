@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 
 from .engine import Engine
@@ -52,6 +53,22 @@ class Conversations:
             return
         self.db.execute("INSERT OR IGNORE INTO chats(id) VALUES (?)", (message.chat_id,))
         chat = self.db.one("SELECT * FROM chats WHERE id=?", (message.chat_id,))
+        if message.system and not message.auto_response:
+            self.db.notify(
+                json.dumps(
+                    {
+                        "chat_id": message.chat_id,
+                        "buyer_id": "",
+                        "text": message.text[:1200],
+                        "source": "playerok",
+                    },
+                    ensure_ascii=False,
+                ),
+                "system:" + message.id,
+                purpose="card:message",
+            )
+            self.done(message)
+            return
         if message.system:
             self.done(message)
             return
@@ -92,7 +109,19 @@ class Conversations:
             await self.command(message)
             self.done(message)
             return
-        self.db.notify(f"Новое сообщение в чате {message.chat_id}\n{text[:1200]}", "incoming:" + message.id)
+        self.db.notify(
+            json.dumps(
+                {
+                    "chat_id": message.chat_id,
+                    "buyer_id": message.user_id,
+                    "buyer_name": message.user_name,
+                    "text": text[:1200],
+                },
+                ensure_ascii=False,
+            ),
+            "incoming:" + message.id,
+            purpose="card:message",
+        )
         if chat["operator_paused"]:
             self.done(message)
             return

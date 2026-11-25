@@ -56,6 +56,8 @@ class Message:
     text: str
     created_at: float
     system: bool = False
+    user_name: str = ""
+    auto_response: bool = False
 
 
 class ServiceError(Exception):

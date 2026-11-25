@@ -120,3 +120,5 @@ CREATE TABLE IF NOT EXISTS provider_actions (
  PRIMARY KEY(order_id,kind)
 );
 
+
+CREATE INDEX IF NOT EXISTS outbox_remote ON outbox(channel,target,remote_id);

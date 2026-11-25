@@ -84,7 +84,10 @@ class Engine:
             )
             if stage == "new":
                 self.db.notify(
-                    f"Новый заказ {deal.id}\n{deal.title}\n{money(deal.price)}", f"order:{deal.id}", deal.id
+                    f"Новый заказ {deal.id}\n{deal.title}\n{money(deal.price)}",
+                    f"order:{deal.id}",
+                    deal.id,
+                    purpose="card:order:new",
                 )
         else:
             self.db.execute(
@@ -109,8 +112,17 @@ class Engine:
                 "UPDATE jobs SET state='cancelled' WHERE order_id=? AND state='pending'", (deal.id,)
             )
             self.db.execute(
-                "UPDATE outbox SET state='cancelled' WHERE order_id=? AND state='pending'", (deal.id,)
+                "UPDATE outbox SET state='cancelled' WHERE order_id=? AND state='pending' "
+                "AND NOT (channel='telegram' AND purpose='card:order:refund')",
+                (deal.id,),
             )
+            if old and not old["historical"] and old["market_status"] != "ROLLED_BACK":
+                self.db.notify(
+                    f"Возврат средств по заказу {deal.id}",
+                    "refund:" + deal.id,
+                    deal.id,
+                    purpose="card:order:refund",
+                )
             if self.order(deal.id)["stage"] not in {"delivered", "historical"}:
                 self.update(deal.id, stage="cancelled")
         if deal.problem:
@@ -450,7 +462,12 @@ class Engine:
             self.db.execute("UPDATE stock SET state='used' WHERE order_id=?", (order_id,))
             Rentals(self).delivered(order_id)
             self.schedule(order_id, "confirm_reminder", now() + 3600)
-        self.db.notify(f"Заказ {order_id} выдан\n{row['title']}", f"delivered:{order_id}", order_id)
+        self.db.notify(
+            f"Заказ {order_id} выдан\n{row['title']}",
+            f"delivered:{order_id}",
+            order_id,
+            purpose="card:order:delivered",
+        )
         if self.db.feature("auto_confirm", row["item_id"]):
             self.schedule(order_id, "mark_sent", now())
 

@@ -25,6 +25,7 @@ from .loyalty import Loyalty
 from .maintenance import prune_updates
 from .models import ServiceError, now
 from .playerok import Playerok
+from .presentation import Cards
 from .rentals import Rentals
 from .telegram_ui import TelegramUI, dispatcher
 from .updater_worker import write
@@ -133,8 +134,13 @@ class Runtime:
             and self.db.get("last_report_day") != day
         ):
             start = local.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
-            path = self.analytics.export(self.config.data_dir / "reports" / f"daily-{day}.xlsx", start=start)
+            end = local.timestamp()
+            path = self.analytics.export(
+                self.config.data_dir / "reports" / f"daily-{day}.xlsx", start=start, end=end
+            )
+            caption = Cards(self.engine).daily(start, end)
             with self.db.transaction():
+                self.db.set("report_caption:" + path.name, self.db.encrypt(caption))
                 for admin in self.config.admins:
                     self.db.enqueue(
                         "telegram", str(admin), path.name, f"daily:{day}:{admin}", purpose="report"
@@ -151,6 +157,7 @@ class Runtime:
                 )
                 if not referenced:
                     path.unlink()
+                    self.db.execute("DELETE FROM settings WHERE key=?", ("report_caption:" + path.name,))
 
     def guard(self):
         if self.updates.folder and (self.updates.folder / "maintenance.json").exists():

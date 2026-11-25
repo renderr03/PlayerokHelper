@@ -240,3 +240,34 @@ async def test_playerok_classifies_safe_graphql_failures(code, expected):
         assert failure.value.code == expected and "PRIVATE_TOKEN" not in str(failure.value)
     finally:
         await api.close()
+
+
+async def test_playerok_chat_messages_include_optional_sender_name():
+    def handle(request):
+        return httpx.Response(
+            200,
+            json={
+                "data": {
+                    "chatMessages": {
+                        "edges": [
+                            {
+                                "node": {
+                                    "id": "msg",
+                                    "user": {"id": "buyer", "username": "BuyerName"},
+                                    "text": "Hello",
+                                    "createdAt": "2026-11-25T12:00:00Z",
+                                }
+                            }
+                        ],
+                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                    }
+                }
+            },
+        )
+
+    api = Playerok({"cookie": "token=fake", "user_agent": "test"}, transport=httpx.MockTransport(handle))
+    try:
+        rows = await api.messages("chat")
+        assert rows[0].user_name == "BuyerName" and rows[0].user_id == "buyer"
+    finally:
+        await api.close()

@@ -4,7 +4,14 @@ from datetime import datetime, timezone
 import pytest
 from aiogram import Bot
 from aiogram.client.session.base import BaseSession
-from aiogram.methods import AnswerCallbackQuery, DeleteMessage, GetMe, SendDocument, SendMessage
+from aiogram.methods import (
+    AnswerCallbackQuery,
+    DeleteMessage,
+    EditMessageText,
+    GetMe,
+    SendDocument,
+    SendMessage,
+)
 from aiogram.types import CallbackQuery, Chat, Message, MessageEntity, Update, User
 
 from shopbot.telegram_ui import TelegramUI, dispatcher
@@ -14,6 +21,7 @@ class CaptureSession(BaseSession):
     def __init__(self):
         super().__init__()
         self.calls = []
+        self.messages = {}
 
     async def close(self):
         pass
@@ -24,14 +32,17 @@ class CaptureSession(BaseSession):
             return True
         if isinstance(method, GetMe):
             return User(id=bot.id, is_bot=True, first_name="Shop", username="shopbot")
-        if isinstance(method, (SendMessage, SendDocument)):
-            return Message(
-                message_id=len(self.calls),
+        if isinstance(method, (SendMessage, SendDocument, EditMessageText)):
+            result = Message(
+                message_id=method.message_id if isinstance(method, EditMessageText) else len(self.calls),
                 date=datetime.now(timezone.utc),
                 chat=Chat(id=int(method.chat_id), type="private"),
                 from_user=User(id=bot.id, is_bot=True, first_name="Shop"),
-                text=method.text if isinstance(method, SendMessage) else None,
+                text=method.text if isinstance(method, (SendMessage, EditMessageText)) else None,
+                reply_markup=method.reply_markup,
             )
+            self.messages[result.message_id] = result
+            return result
         raise AssertionError(type(method).__name__)
 
     async def stream_content(self, *args, **kwargs):
@@ -47,7 +58,7 @@ async def panel(app, tmp_path):
     dp = dispatcher(ui)
     counter = 0
 
-    async def send(text=None, callback=None, user=42, chat_type="private"):
+    async def send(text=None, callback=None, user=42, chat_type="private", source=None):
         nonlocal counter
         counter += 1
         actor = User(id=user, is_bot=False, first_name="Admin")
@@ -62,6 +73,11 @@ async def panel(app, tmp_path):
             else None,
         )
         if callback:
+            anchor = ui.panels.get((bot.id, user, user))
+            if source is not None:
+                message = source
+            elif anchor:
+                message = anchor
             update = Update(
                 update_id=counter,
                 callback_query=CallbackQuery(
@@ -83,7 +99,7 @@ async def test_admin_menu_and_auth_gate(panel):
     assert not session.calls
     await send("/start")
     response = session.calls[-1]
-    assert isinstance(response, SendMessage)
+    assert isinstance(response, (SendMessage, EditMessageText))
     labels = [button.text for row in response.reply_markup.inline_keyboard for button in row]
     assert "⭐ Автонастройки" in labels
     assert "📈 Аналитика" in labels
@@ -357,7 +373,9 @@ async def test_private_token_connection_is_encrypted_and_live_without_restart(pa
     assert ui.engine.market.current is candidates[0]
     assert ui.db.get("profile")["id"] == "seller"
     assert b"private-credential" not in ui.db.path.read_bytes()
-    assert "private-credential" not in "".join(m.text for m in session.calls if isinstance(m, SendMessage))
+    assert "private-credential" not in "".join(
+        m.text for m in session.calls if isinstance(m, (SendMessage, EditMessageText))
+    )
     assert any(isinstance(m, DeleteMessage) for m in session.calls)
     assert ui.db.get("live_enabled") is False
     await ui.engine.market.close()
@@ -420,7 +438,9 @@ async def test_email_flow_cancel_cooldown_attempt_limit_and_no_secret_echo(panel
     await send("owner@example.org")
     await send("123456")
     assert ui.db.get("playerok_session") and not ui.logins and created[-1].closed
-    assert "123456" not in "".join(m.text for m in session.calls if isinstance(m, SendMessage))
+    assert "123456" not in "".join(
+        m.text for m in session.calls if isinstance(m, (SendMessage, EditMessageText))
+    )
     await ui.engine.market.close()
 
 
@@ -504,7 +524,7 @@ async def test_provider_key_buttons_and_simple_help(panel):
     assert {"connect:key:twiboost", "connect:key:vexboost", "connect:key:jap"} <= callbacks(session.calls[-1])
     for action in ["setup:home", "menu:help", "menu:account", "updates:home"]:
         await send(callback=action)
-    all_text = "\n".join(m.text for m in session.calls if isinstance(m, SendMessage))
+    all_text = "\n".join(m.text for m in session.calls if isinstance(m, (SendMessage, EditMessageText)))
     for forbidden in ["/cancel", "/setup", "/reply", "systemctl", ".venv/bin", "sudo ", "provider-setup"]:
         assert forbidden not in all_text
 
@@ -620,7 +640,9 @@ async def test_token_connection_succeeds_after_realistic_playerok_cache_500(pane
     assert "Аккаунт Playerok подключён" in session.calls[-1].text
     assert [r.method for r in requests] == ["GET", "POST"]
     assert ui.db.get("playerok_session")
-    assert "correct-private-token" not in "".join(c.text for c in session.calls if isinstance(c, SendMessage))
+    assert "correct-private-token" not in "".join(
+        c.text for c in session.calls if isinstance(c, (SendMessage, EditMessageText))
+    )
     await ui.engine.market.close()
 
 

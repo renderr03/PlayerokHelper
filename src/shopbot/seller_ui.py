@@ -5,12 +5,14 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from urllib.parse import quote
 
 from aiogram.types import BufferedInputFile, InlineKeyboardButton, InlineKeyboardMarkup
 
 from .loyalty import Loyalty
 from .maintenance import diagnostics, update_status
 from .models import now, rub
+from .presentation import link, safe
 from .rentals import Rentals
 
 MODE_NAMES = {
@@ -95,16 +97,19 @@ class SellerUI:
         orders = self.db.all(
             "SELECT * FROM orders WHERE chat_id=? ORDER BY created_at DESC LIMIT 5", (chat["id"],)
         )
-        lines = ["💬 Чат " + chat["id"], "Последние сообщения (до 10):"]
+        lines = ["<b>💬 Переписка с покупателем</b>", "Последние сообщения:", ""]
         for row in reversed(history):
             lines.append(
-                ("Покупатель: " if row["sender"] == "buyer" else "Продавец: ")
-                + self.db.decrypt(row["ciphertext"])[:220]
+                ("<b>👤 Покупатель:</b> " if row["sender"] == "buyer" else "<b>🛍 Продавец:</b> ")
+                + safe(self.db.decrypt(row["ciphertext"]), 220)
             )
         keys = [("✍ Ответить", "s:reply:" + str(rid)), ("⚡ Быстрый ответ", "s:quick:choose:" + str(rid))]
         keys += [(r["stage"] + " · " + r["title"][:25], "order:" + r["id"]) for r in orders]
         keys += [("‹ Чаты", "s:inbox:all:0")]
-        await message.answer("\n".join(lines)[:3800], reply_markup=buttons(keys))
+        lines += ["", link("Открыть чат на Playerok", "chats/" + quote(chat["id"], safe=""))]
+        await message.answer(
+            "\n".join(lines), parse_mode="HTML", disable_web_page_preview=True, reply_markup=buttons(keys)
+        )
 
     async def catalog(self, message, state, *, page=None, module=None, role=None):
         context = await state.get_data() if state else {}
