@@ -591,3 +591,65 @@ async def test_failed_restore_remains_persisted_and_disables_readiness(panel):
     await ui.recover_visibility()
     assert not ui.db.get("visibility_test_pending")
     assert (await market.item("test-lot"))["status"] == "APPROVED"
+
+
+async def test_token_connection_succeeds_after_realistic_playerok_cache_500(panel):
+    import httpx
+
+    from shopbot.playerok import Playerok
+
+    ui, session, send = panel
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        assert request.headers["cookie"] == "token=correct-private-token"
+        if request.method == "GET":
+            return httpx.Response(
+                500, json={"errors": [{"extensions": {"code": "PERSISTED_QUERY_NOT_FOUND"}}]}
+            )
+        return httpx.Response(
+            200, json={"data": {"viewer": {"id": "seller", "username": "myshop", "balance": {"value": 100}}}}
+        )
+
+    ui.playerok_factory = lambda session, visibility: Playerok(
+        session, visibility, transport=httpx.MockTransport(handle)
+    )
+    await send(callback="connect:token")
+    await send("correct-private-token")
+    assert "Аккаунт Playerok подключён" in session.calls[-1].text
+    assert [r.method for r in requests] == ["GET", "POST"]
+    assert ui.db.get("playerok_session")
+    assert "correct-private-token" not in "".join(c.text for c in session.calls if isinstance(c, SendMessage))
+    await ui.engine.market.close()
+
+
+@pytest.mark.parametrize(
+    "code,expected",
+    [
+        ("playerok_http_403", "HTTP 403"),
+        ("playerok_http_500", "HTTP 500"),
+        ("playerok_auth_required", "сессию"),
+        ("playerok_network", "связаться"),
+        ("playerok_query_rejected", "формат запроса"),
+    ],
+)
+async def test_token_failure_shows_specific_safe_reason(panel, code, expected):
+    from shopbot.models import ServiceError
+
+    ui, session, send = panel
+
+    class Candidate:
+        async def profile(self):
+            raise ServiceError(code)
+
+        async def close(self):
+            pass
+
+    ui.playerok_factory = lambda *args: Candidate()
+    await send(callback="connect:token")
+    await send("private-test-token")
+    assert expected in session.calls[-1].text
+    assert "private-test-token" not in session.calls[-1].text
+    assert "ui:cancel" in callbacks(session.calls[-1])
+    assert not ui.db.get("playerok_session")

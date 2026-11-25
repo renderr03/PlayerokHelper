@@ -141,19 +141,31 @@ class Playerok:
                         "extensions": json.dumps(extensions),
                     },
                 )
-                if response.is_success:
+                # Playerok also returns a structured APQ cache miss with HTTP
+                # 400/500. Register only this read query, exactly once. Other
+                # server errors, auth failures and mutations are never retried.
+                if response.status_code in {200, 400, 500}:
                     try:
                         initial = response.json()
                     except ValueError:
-                        raise ServiceError("playerok_invalid_response") from None
-                    missing = any(
-                        error.get("extensions", {}).get("code") == "PERSISTED_QUERY_NOT_FOUND"
-                        or error.get("message") == "PersistedQueryNotFound"
-                        for error in initial.get("errors", [])
+                        initial = None
+                    errors = initial.get("errors") if isinstance(initial, dict) else None
+                    missing = (
+                        isinstance(errors, list)
+                        and bool(errors)
+                        and all(
+                            isinstance(error, dict)
+                            and (
+                                (
+                                    isinstance(error.get("extensions"), dict)
+                                    and error["extensions"].get("code") == "PERSISTED_QUERY_NOT_FOUND"
+                                )
+                                or error.get("message") == "PersistedQueryNotFound"
+                            )
+                            for error in errors
+                        )
                     )
                     if missing:
-                        # Register only this read query via POST. Large fragment documents
-                        # must not be embedded in a GET URL; mutations never enter here.
                         response = await self.client.post(
                             "/graphql", json={**payload, "extensions": extensions}
                         )
@@ -174,8 +186,29 @@ class Playerok:
             body = response.json()
         except ValueError:
             raise ServiceError("playerok_invalid_response", ambiguous=mutation) from None
+        if not isinstance(body, dict):
+            raise ServiceError("playerok_invalid_response", ambiguous=mutation)
         if body.get("errors") or not isinstance(body.get("data"), dict):
-            raise ServiceError("playerok_graphql_error", ambiguous=mutation)
+            errors = body.get("errors")
+            codes = (
+                {
+                    error["extensions"]["code"]
+                    for error in errors
+                    if isinstance(error, dict)
+                    and isinstance(error.get("extensions"), dict)
+                    and isinstance(error["extensions"].get("code"), str)
+                }
+                if isinstance(errors, list)
+                else set()
+            )
+            code = "playerok_graphql_error"
+            if codes.intersection({"UNAUTHENTICATED", "UNAUTHORIZED"}):
+                code = "playerok_auth_required"
+            elif "FORBIDDEN" in codes:
+                code = "playerok_access_denied"
+            elif "GRAPHQL_VALIDATION_FAILED" in codes:
+                code = "playerok_query_rejected"
+            raise ServiceError(code, ambiguous=mutation)
         return body["data"]
 
     async def profile(self):

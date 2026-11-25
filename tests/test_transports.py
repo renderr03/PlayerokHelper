@@ -141,13 +141,17 @@ async def test_builtin_visibility_uses_documented_rest_routes_and_verifies_statu
         await api.close()
 
 
-async def test_large_read_queries_register_with_post_only_after_apq_miss():
+@pytest.mark.parametrize("status", [200, 400, 500])
+@pytest.mark.parametrize(
+    "error", [{"message": "PersistedQueryNotFound"}, {"extensions": {"code": "PERSISTED_QUERY_NOT_FOUND"}}]
+)
+async def test_large_read_queries_register_with_post_only_after_apq_miss(status, error):
     seen = []
 
     def handle(request):
         seen.append(request)
         if request.method == "GET":
-            return httpx.Response(200, json={"errors": [{"message": "PersistedQueryNotFound"}]})
+            return httpx.Response(status, json={"errors": [error]})
         return httpx.Response(200, json={"data": {"viewer": {"id": "seller"}}})
 
     api = Playerok({"cookie": "token=fake", "user_agent": "test"}, transport=httpx.MockTransport(handle))
@@ -156,5 +160,83 @@ async def test_large_read_queries_register_with_post_only_after_apq_miss():
         assert [r.method for r in seen] == ["GET", "POST"]
         assert "query" not in seen[0].url.params
         assert json.loads(seen[1].content)["query"].startswith("query viewer")
+    finally:
+        await api.close()
+
+
+@pytest.mark.parametrize(
+    "status,body",
+    [
+        (500, {"errors": [{"message": "internal private diagnostic"}]}),
+        (
+            500,
+            {"errors": [{"message": "PersistedQueryNotFound"}, {"extensions": {"code": "UNAUTHENTICATED"}}]},
+        ),
+        (500, {"errors": [{"extensions": ["invalid-shape"]}]}),
+        (401, {"errors": [{"message": "PersistedQueryNotFound"}]}),
+        (403, {"errors": [{"message": "PersistedQueryNotFound"}]}),
+        (429, {"errors": [{"message": "PersistedQueryNotFound"}]}),
+    ],
+)
+async def test_playerok_does_not_retry_other_errors_or_auth_denials(status, body):
+    calls = []
+
+    def handle(request):
+        calls.append(request)
+        return httpx.Response(status, json=body)
+
+    api = Playerok(
+        {"cookie": "token=private-test-token", "user_agent": "test"}, transport=httpx.MockTransport(handle)
+    )
+    try:
+        with pytest.raises(ServiceError) as failure:
+            await api.profile()
+        assert len(calls) == 1
+        assert "private" not in str(failure.value)
+    finally:
+        await api.close()
+
+
+async def test_mutation_never_registers_or_repeats_after_apq_500():
+    calls = []
+
+    def handle(request):
+        calls.append(request)
+        return httpx.Response(500, json={"errors": [{"extensions": {"code": "PERSISTED_QUERY_NOT_FOUND"}}]})
+
+    api = Playerok(
+        {"cookie": "token=fake-token", "user_agent": "test"}, transport=httpx.MockTransport(handle)
+    )
+    try:
+        with pytest.raises(ServiceError) as failure:
+            await api.mark_sent("order")
+        assert failure.value.ambiguous
+        assert len(calls) == 1 and calls[0].method == "POST"
+    finally:
+        await api.close()
+
+
+@pytest.mark.parametrize(
+    "code,expected",
+    [
+        ("UNAUTHENTICATED", "playerok_auth_required"),
+        ("FORBIDDEN", "playerok_access_denied"),
+        ("GRAPHQL_VALIDATION_FAILED", "playerok_query_rejected"),
+        ("UNRECOGNIZED", "playerok_graphql_error"),
+    ],
+)
+async def test_playerok_classifies_safe_graphql_failures(code, expected):
+    api = Playerok(
+        {"cookie": "token=fake-token", "user_agent": "test"},
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200, json={"errors": [{"message": "PRIVATE_TOKEN", "extensions": {"code": code}}]}
+            )
+        ),
+    )
+    try:
+        with pytest.raises(ServiceError) as failure:
+            await api.profile()
+        assert failure.value.code == expected and "PRIVATE_TOKEN" not in str(failure.value)
     finally:
         await api.close()

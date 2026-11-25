@@ -39,6 +39,41 @@ def controls(back="connect:home"):
     return buttons([("‹ Назад", back), ("✖ Отменить", "ui:cancel")])
 
 
+def connection_error_text(error, *, playerok=True):
+    """Show only known failure categories, never arbitrary server text or keys."""
+    if not playerok:
+        if error.code == "kosell_http_401":
+            return "KOSell не принял API-ключ. Проверьте его в кабинете поставщика."
+        if error.code == "kosell_rate_limit":
+            return "KOSell ограничил частоту запросов. Подождите и повторите проверку."
+        return "Поставщик не подтвердил подключение. Проверьте его доступность и API-ключ в кабинете."
+    messages = {
+        "playerok_auth_required": "Playerok не подтвердил сессию. Она могла истечь или быть отозвана. Войдите на сайте и получите новый токен.",
+        "playerok_http_401": "Playerok не подтвердил сессию (HTTP 401). Она могла истечь или быть отозвана. Войдите на сайте и получите новый токен.",
+        "playerok_http_403": "Playerok отклонил запрос с сервера (HTTP 403). Это не доказывает, что токен введён неверно. Проверьте доступ к сайту с сервера; может потребоваться полный Cookie и User-Agent вашей сессии.",
+        "playerok_access_denied": "Playerok запретил доступ к профилю этой сессии. Проверьте доступ к аккаунту на сайте.",
+        "playerok_query_rejected": "Playerok отклонил формат запроса профиля. Это ошибка совместимости API, а не доказательство неверного токена. Проверьте обновление бота.",
+        "playerok_graphql_error": "API Playerok не вернул профиль. Причина не определена; токен пока не сохранён. Проверьте обновление бота и повторите попытку.",
+        "playerok_invalid_response": "Вместо ответа API Playerok получен другой формат. Проверьте доступ к площадке с сервера; токен пока не сохранён.",
+        "playerok_network": "Сервер бота не смог связаться с Playerok. Проверьте сеть и доступ к площадке с сервера, затем повторите попытку.",
+        "playerok_invalid_profile": "Playerok вернул неполные данные профиля. Подключение не сохранено; проверьте доступ к аккаунту на сайте.",
+    }
+    if error.code == "playerok_rate_limit":
+        return (
+            "Playerok ограничил частоту запросов. Повторите через "
+            + str(max(1, min(3600, error.retry_after or 30)))
+            + " с."
+        )
+    if error.code in messages:
+        return messages[error.code]
+    match = re.fullmatch(r"playerok_http_([45][0-9]{2})", error.code)
+    if match:
+        return "Playerok вернул HTTP " + match[1] + ". Подключение пока не подтверждено. Попробуйте позже."
+    if error.code.startswith("playerok_login_"):
+        return "Вход по почте не подтверждён. Проверьте код. Если сайт требует проверку браузера или второй фактор, войдите на сайте и используйте токен."
+    return "Подключение Playerok не подтверждено. Проверьте доступ к аккаунту на сайте и повторите попытку."
+
+
 class AccountUI:
     def init_connections(self):
         self.logins = {}
@@ -285,7 +320,7 @@ class AccountUI:
                             ]
                         ),
                     )
-            except ServiceError:
+            except ServiceError as exc:
                 if form == ConnectionForm.code.state and message.chat.id not in self.logins:
                     await state.clear()
                     return await message.answer(
@@ -299,9 +334,7 @@ class AccountUI:
                         ),
                     )
                 await message.answer(
-                    "Playerok или поставщик не подтвердил подключение. "
-                    "Проверьте данные и попробуйте снова. Если сайт просит проверку браузера или второй фактор, "
-                    "войдите на сайте и выберите подключение по токену.",
+                    connection_error_text(exc, playerok=form != ConnectionForm.key.state),
                     reply_markup=controls(
                         "connect:playerok" if form != ConnectionForm.key.state else "connect:home"
                     ),
