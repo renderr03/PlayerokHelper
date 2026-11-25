@@ -159,7 +159,8 @@ async def test_probe_button_is_throttled_and_keeps_panel_message(panel):
     assert "HTTP 403" in session.calls[-1].text and session.calls[-1].message_id == anchor
     await send(callback="connect:probe")
     assert len(calls) == 1
-    assert set(ui.db.get("connection_probe")) == {"at", "checks"}
+    assert set(ui.db.get("connection_probe")) == {"at", "checks", "transport"}
+    assert ui.db.get("connection_probe")["transport"] == "curl_cffi"
     assert session.calls[-1].message_id == anchor
 
 

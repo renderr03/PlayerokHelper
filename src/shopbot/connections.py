@@ -11,9 +11,10 @@ from contextlib import asynccontextmanager
 import httpx
 
 from .models import ServiceError
+from .playerok_transport import PlayerokTransport
 
 USER_AGENT = (
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36"
 )
 
 
@@ -146,7 +147,7 @@ class EmailLogin:
                 "Referer": "https://playerok.com/",
                 "Apollo-Require-Preflight": "true",
             },
-            transport=transport,
+            transport=transport if transport is not None else PlayerokTransport(),
         )
 
     async def mutation(self, operation, variables, query):

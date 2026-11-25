@@ -9,10 +9,58 @@ import re
 import shutil
 import sys
 import zipfile
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 from . import __version__
 from .updates import read_json
+
+
+def connection_diagnostics(db):
+    from curl_cffi.requests.impersonate import DEFAULT_CHROME
+
+    packages = {}
+    for name in ("curl_cffi", "httpx"):
+        try:
+            packages[name] = version(name)
+        except PackageNotFoundError:
+            packages[name] = "not_installed"
+    result = {"transport": "curl_cffi", "profile": DEFAULT_CHROME, "packages": packages}
+    snapshot = db.get("connection_probe")
+    if not isinstance(snapshot, dict):
+        return result
+    # Do not export arbitrary settings, headers, exceptions or response bodies.
+    checks = []
+    source = snapshot.get("checks")
+    for check in source[:2] if isinstance(source, list) else []:
+        if not isinstance(check, dict):
+            continue
+        status = check.get("status")
+        if (
+            not isinstance(check.get("endpoint"), str)
+            or check["endpoint"] not in {"site", "api"}
+            or not isinstance(check.get("kind"), str)
+            or check["kind"] not in {"html", "json", "other", "timeout", "network"}
+            or not (status is None or type(status) is int and 100 <= status <= 599)
+        ):
+            continue
+        checks.append(
+            {
+                "endpoint": check["endpoint"],
+                "status": status,
+                "kind": check["kind"],
+                "security": check.get("security") is True,
+                "api_ok": check.get("api_ok") is True,
+            }
+        )
+    at = snapshot.get("at")
+    if type(at) in {int, float} and 0 < at < 100_000_000_000:
+        result["probe"] = {
+            "at": at,
+            "checks": checks,
+            "transport": "curl_cffi" if snapshot.get("transport") == "curl_cffi" else "unknown",
+        }
+    return result
 
 
 def update_status(directory):
@@ -59,6 +107,7 @@ def diagnostics(db, directory):
         "lots": db.one("SELECT count(*) count FROM bindings")["count"],
         "uncertain_sends": db.one("SELECT count(*) count FROM outbox WHERE state='uncertain'")["count"],
         "update": update_status(directory),
+        "connection": connection_diagnostics(db),
     }
     result = db.get("update_last_result", {})
     if isinstance(result, dict):

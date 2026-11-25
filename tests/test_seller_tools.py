@@ -168,13 +168,28 @@ def test_diagnostic_archive_does_not_copy_user_data_or_secrets(app, tmp_path):
     secret = "TOP_PRIVATE_TOKEN_OR_CHAT"
     db.set("profile", {"username": secret})
     db.set("unrelated", secret)
+    db.set(
+        "connection_probe",
+        {
+            "at": 1795617151,
+            "cookie": secret,
+            "checks": [
+                {"endpoint": "site", "status": 403, "kind": "html", "security": True, "body": secret},
+                {"endpoint": "api", "status": 403, "kind": "html", "security": True, "headers": secret},
+            ],
+        },
+    )
     db.add_stock("secret", [secret])
     (tmp_path / ".env").write_text(secret)
     archive = zipfile.ZipFile(io.BytesIO(diagnostics(db, tmp_path)))
     assert archive.namelist() == ["diagnostics.json"]
     data = archive.read("diagnostics.json")
     assert secret.encode() not in data
-    assert "version" in json.loads(data)
+    payload = json.loads(data)
+    assert "version" in payload
+    assert payload["connection"]["transport"] == "curl_cffi"
+    assert payload["connection"]["packages"]["curl_cffi"] == "0.17.0"
+    assert payload["connection"]["probe"]["checks"][1]["status"] == 403
 
 
 def test_update_retention_keeps_three_backups_active_and_previous_environment(tmp_path):

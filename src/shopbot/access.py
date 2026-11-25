@@ -7,6 +7,7 @@ import json
 import httpx
 
 from .connections import USER_AGENT
+from .playerok_transport import PlayerokTransport
 
 SECURITY_MARKERS = (b"ddos-guard", b"checking your browser", b"challenge-platform", b"cf-chl-", b"captcha")
 
@@ -27,7 +28,7 @@ async def probe_access(*, transport=None):
         base_url="https://playerok.com",
         timeout=httpx.Timeout(8, connect=5),
         follow_redirects=False,
-        transport=transport,
+        transport=transport if transport is not None else PlayerokTransport(),
         headers={
             "User-Agent": USER_AGENT,
             "Accept": "application/json, text/html;q=0.9",

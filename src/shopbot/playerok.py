@@ -11,6 +11,7 @@ from pathlib import Path
 import httpx
 
 from .models import Deal, Message, ServiceError, rub, timestamp
+from .playerok_transport import PlayerokTransport
 
 CONTRACT_NAMES = {
     "viewer": "viewer",
@@ -68,7 +69,7 @@ class Playerok:
                 "Referer": "https://playerok.com/",
                 "Apollo-Require-Preflight": "true",
             },
-            transport=transport,
+            transport=transport if transport is not None else PlayerokTransport(),
         )
         self._requests = asyncio.Semaphore(4)
         self._not_before = 0

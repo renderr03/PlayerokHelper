@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/renderr03/PlayerokHelper/releases/tag/v0.5.3"><img src="https://img.shields.io/badge/Версия-0.5.3-39CDA4" alt="Версия 0.5.3"></a>
+  <a href="https://github.com/renderr03/PlayerokHelper/releases/tag/v0.5.4"><img src="https://img.shields.io/badge/Версия-0.5.4-39CDA4" alt="Версия 0.5.4"></a>
   <a href="https://github.com/renderr03/PlayerokHelper/actions/workflows/tests.yml"><img src="https://github.com/renderr03/PlayerokHelper/actions/workflows/tests.yml/badge.svg" alt="Проверки проекта"></a>
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&amp;logoColor=white" alt="Python 3.11 и новее">
   <img src="https://img.shields.io/badge/Размещение-свой_сервер-39CDA4" alt="Размещение на своём сервере">
@@ -32,6 +32,10 @@
 - **Всё в Telegram.** Настройки, заказы, сообщения покупателям и отчёты в одной панели.
 - **Ваш сервер и ваши настройки.** Токен бота и ключ шифрования хранятся в локальном `.env`; подключения из панели и складские данные — в зашифрованной базе.
 - **Установка одной командой.** Консоль спросит токен и ID администратора, затем настроит запуск в фоне и после перезагрузки.
+
+## 0.5.4: подключение через curl_cffi
+
+Запросы Playerok, вход по почте и проверка доступа используют `curl_cffi 0.17.0` с профилем Chrome 152. Cookie и User-Agent вашей сессии сохраняются, настройки не нужно вводить заново. В диагностическом ZIP теперь есть версии сетевых библиотек и последний безопасный результат проверки доступа. Это смена сетевого клиента, а не подтверждённое исправление HTTP 403 на каждом сервере. Обновление доступно кнопкой в Telegram. [Подробный отчёт](docs/releases/v0.5.4.md).
 
 ## 0.5.3: проверка доступа и полная сессия
 

@@ -187,10 +187,14 @@ class AccountUI:
             await self.expire_logins(message.chat.id)
             async with self.connection_lock:
                 snapshot = self.db.get("connection_probe") or {}
-                if not snapshot or now() - snapshot.get("at", 0) >= 60:
+                if (
+                    not snapshot
+                    or snapshot.get("transport") != "curl_cffi"
+                    or now() - snapshot.get("at", 0) >= 60
+                ):
                     await message.answer("Проверяю доступ к сайту и API без авторизации…")
                     checks = await self.access_probe()
-                    snapshot = {"at": now(), "checks": checks}
+                    snapshot = {"at": now(), "checks": checks, "transport": "curl_cffi"}
                     self.db.set("connection_probe", snapshot)
                 await message.answer(
                     probe_text(snapshot["checks"])
