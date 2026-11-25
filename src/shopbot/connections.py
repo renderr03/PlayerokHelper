@@ -19,6 +19,8 @@ USER_AGENT = (
 
 def session_input(value):
     value = value.strip()
+    if value.lower().startswith("cookie:"):
+        value = value.split(":", 1)[1].strip()
     if value.startswith("{"):
         result = json.loads(value)
         if not isinstance(result, dict):
@@ -158,6 +160,8 @@ class EmailLogin:
                     "query": query,
                 },
             ) as response:
+                if response.status_code == 403:
+                    raise ServiceError("playerok_http_403")
                 if response.status_code != 200:
                     raise ServiceError("playerok_login_unavailable")
                 body = bytearray()

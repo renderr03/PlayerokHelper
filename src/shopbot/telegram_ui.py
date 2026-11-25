@@ -125,6 +125,8 @@ class TelegramUI(AccountUI, ExternalUI, SellerUI):
             self.connection_input,
             StateFilter(
                 ConnectionForm.token,
+                ConnectionForm.cookie,
+                ConnectionForm.user_agent,
                 ConnectionForm.email,
                 ConnectionForm.code,
                 ConnectionForm.key,
@@ -426,6 +428,8 @@ class TelegramUI(AccountUI, ExternalUI, SellerUI):
         await query.answer()
         message = query.message
         data = query.data or ""
+        if await state.get_state() in {ConnectionForm.cookie.state, ConnectionForm.user_agent.state}:
+            await state.clear()
         if data.startswith("card:"):
             data = self.cards.route(data)
             if data is None:

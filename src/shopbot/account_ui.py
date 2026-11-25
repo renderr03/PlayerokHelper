@@ -12,6 +12,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardButton
 
 from . import __version__
+from .access import probe_access, probe_text
 from .connections import EmailLogin, ManagedClient, session_input
 from .external import save_provider
 from .kosell import KOSell
@@ -29,6 +30,8 @@ DOCS = (
 
 class ConnectionForm(StatesGroup):
     token = State()
+    cookie = State()
+    user_agent = State()
     email = State()
     code = State()
     key = State()
@@ -50,6 +53,7 @@ def connection_error_text(error, *, playerok=True):
     messages = {
         "playerok_auth_required": "Playerok не подтвердил сессию. Она могла истечь или быть отозвана. Войдите на сайте и получите новый токен.",
         "playerok_http_401": "Playerok не подтвердил сессию (HTTP 401). Она могла истечь или быть отозвана. Войдите на сайте и получите новый токен.",
+        "playerok_security_check": "Сервер получил страницу проверки или защиты Playerok (HTTP 403). Профиль аккаунта пока не подтверждён. Откройте проверку доступа ниже и инструкцию. Автоматическое прохождение этой страницы не выполняется.",
         "playerok_http_403": "Playerok отклонил запрос с сервера (HTTP 403). Это не доказывает, что токен введён неверно. Проверьте доступ к сайту с сервера; может потребоваться полный Cookie и User-Agent вашей сессии.",
         "playerok_access_denied": "Playerok запретил доступ к профилю этой сессии. Проверьте доступ к аккаунту на сайте.",
         "playerok_query_rejected": "Playerok отклонил формат запроса профиля. Это ошибка совместимости API, а не доказательство неверного токена. Проверьте обновление бота.",
@@ -80,6 +84,7 @@ class AccountUI:
         self.connection_lock = asyncio.Lock()
         self.connection_config = None
         self.playerok_factory = Playerok
+        self.access_probe = probe_access
         self.login_factory = EmailLogin
         self.kosell_factory = KOSell
 
@@ -133,6 +138,8 @@ class AccountUI:
                     [
                         ("✉️ По почте", "connect:email"),
                         ("🔑 По токену", "connect:token"),
+                        ("🌐 Полная сессия браузера", "connect:session"),
+                        ("🔎 Проверить доступ сервера", "connect:probe"),
                         ("‹ Назад", "connect:home"),
                     ]
                 ),
@@ -158,6 +165,46 @@ class AccountUI:
                 "Сообщение с токеном будет удалено по возможности, сессия сохранится зашифрованно на сервере.",
                 reply_markup=markup,
             )
+        elif data == "connect:session":
+            await state.clear()
+            await self.expire_logins(message.chat.id)
+            await state.set_state(ConnectionForm.cookie)
+            markup = controls("connect:playerok")
+            markup.inline_keyboard.insert(
+                0,
+                [
+                    InlineKeyboardButton(
+                        text="Где взять Cookie и User-Agent", url=DOCS + "#полная-сессия-браузера"
+                    )
+                ],
+            )
+            await message.answer(
+                "Полная сессия · шаг 1 из 2\n\nПришлите значение заголовка Cookie из запроса к playerok.com после обычного входа. На следующем шаге нужен User-Agent того же браузера.\nЭто даёт доступ к вашему магазину. Используйте только личный чат этого бота; сообщение удаляется по возможности.",
+                reply_markup=markup,
+            )
+        elif data == "connect:probe":
+            await state.clear()
+            await self.expire_logins(message.chat.id)
+            async with self.connection_lock:
+                snapshot = self.db.get("connection_probe") or {}
+                if not snapshot or now() - snapshot.get("at", 0) >= 60:
+                    await message.answer("Проверяю доступ к сайту и API без авторизации…")
+                    checks = await self.access_probe()
+                    snapshot = {"at": now(), "checks": checks}
+                    self.db.set("connection_probe", snapshot)
+                await message.answer(
+                    probe_text(snapshot["checks"])
+                    + "\n\nПроверено: "
+                    + self.engine.expiry(snapshot["at"])
+                    + "\nПовторная проверка — не чаще раза в минуту.",
+                    reply_markup=buttons(
+                        [
+                            ("🔄 Проверить ещё раз", "connect:probe"),
+                            ("🌐 Ввести полную сессию", "connect:session"),
+                            ("‹ Способы подключения", "connect:playerok"),
+                        ]
+                    ),
+                )
         elif data == "connect:smm":
             await state.clear()
             await message.answer(
@@ -217,6 +264,8 @@ class AccountUI:
         # Never echo credentials, even after a failed validation or deletion.
         if form in {
             ConnectionForm.token.state,
+            ConnectionForm.cookie.state,
+            ConnectionForm.user_agent.state,
             ConnectionForm.email.state,
             ConnectionForm.code.state,
             ConnectionForm.key.state,
@@ -279,6 +328,34 @@ class AccountUI:
                     await self.apply_playerok(session_input(text))
                     await state.clear()
                     await self.connected(message)
+                elif form == ConnectionForm.cookie.state:
+                    session = session_input(text)
+                    await state.update_data(
+                        connection_cookie=self.db.encrypt(session["cookie"]), connection_expires=now() + 600
+                    )
+                    await state.set_state(ConnectionForm.user_agent)
+                    await message.answer(
+                        "Полная сессия · шаг 2 из 2\n\nПришлите User-Agent из того же запроса браузера. Заголовок начинается с User-Agent, его значение часто начинается с Mozilla/.\nСессия может зависеть от сети/IP: Cookie с телефона не гарантирует работу на VPS.",
+                        reply_markup=controls("connect:session"),
+                    )
+                elif form == ConnectionForm.user_agent.state:
+                    if context.get("connection_expires", 0) < now() or not context.get("connection_cookie"):
+                        await state.clear()
+                        return await message.answer(
+                            "Время ввода сессии истекло. Начните заново.",
+                            reply_markup=buttons(
+                                [("Ввести сессию", "connect:session"), ("Отменить", "ui:cancel")]
+                            ),
+                        )
+                    agent = re.sub(r"(?i)^user-agent\s*:\s*", "", text)
+                    session = session_input(
+                        json.dumps(
+                            {"cookie": self.db.decrypt(context["connection_cookie"]), "user_agent": agent}
+                        )
+                    )
+                    await self.apply_playerok(session)
+                    await state.clear()
+                    await self.connected(message)
                 elif form == ConnectionForm.key.state:
                     preset = context["preset"]
                     if preset == "kosell":
@@ -333,12 +410,28 @@ class AccountUI:
                             ]
                         ),
                     )
-                await message.answer(
-                    connection_error_text(exc, playerok=form != ConnectionForm.key.state),
-                    reply_markup=controls(
-                        "connect:playerok" if form != ConnectionForm.key.state else "connect:home"
-                    ),
-                )
+                markup = controls("connect:playerok" if form != ConnectionForm.key.state else "connect:home")
+                if form != ConnectionForm.key.state:
+                    markup.inline_keyboard[0:0] = [
+                        [
+                            InlineKeyboardButton(
+                                text="🔎 Проверить доступ сервера", callback_data="connect:probe"
+                            )
+                        ],
+                        [
+                            InlineKeyboardButton(
+                                text="🌐 Полная сессия браузера", callback_data="connect:session"
+                            )
+                        ],
+                        [InlineKeyboardButton(text="Инструкция по подключению", url=DOCS)],
+                    ]
+                error_text = connection_error_text(exc, playerok=form != ConnectionForm.key.state)
+                if form == ConnectionForm.user_agent.state and exc.code in {
+                    "playerok_http_403",
+                    "playerok_security_check",
+                }:
+                    error_text = "Проверка введённой сессии тоже завершилась HTTP 403. Cookie и User-Agent могут не подходить этой сети, либо доступ ограничивает площадка. Нажмите «Проверить доступ сервера»; повторный ввод того же токена пока не даст новой информации."
+                await message.answer(error_text, reply_markup=markup)
             except (ValueError, KeyError, TypeError) as exc:
                 reason = {
                     "Подождите минуту перед повторным запросом кода.": "Подождите минуту перед повторным запросом кода.",
@@ -347,6 +440,8 @@ class AccountUI:
                     "Сначала завершите сверку текущих заказов этого поставщика": "У поставщика есть незавершённые заказы. Сначала завершите их сверку.",
                 }.get(str(exc))
                 fallback = {
+                    ConnectionForm.cookie.state: "Cookie не принят. Нужен заголовок Cookie только от playerok.com с непустым token.",
+                    ConnectionForm.user_agent.state: "User-Agent не принят. Скопируйте его значение из того же запроса браузера; другие заголовки добавлять не нужно.",
                     ConnectionForm.email.state: "Проверьте адрес почты: например name@example.com.",
                     ConnectionForm.code.state: "Отправьте шесть цифр из письма Playerok.",
                     ConnectionForm.token.state: "Токен не распознан. Пришлите его значение, Cookie или JSON с cookie и user_agent.",

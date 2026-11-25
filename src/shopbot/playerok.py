@@ -178,6 +178,11 @@ class Playerok:
                 delay = 30
             self._not_before = time.time() + delay
             raise ServiceError("playerok_rate_limit", retry_after=delay)
+        if response.status_code == 403:
+            from .access import security_page
+
+            if security_page(response):
+                raise ServiceError("playerok_security_check")
         if not response.is_success:
             raise ServiceError(
                 f"playerok_http_{response.status_code}", ambiguous=mutation and response.status_code >= 500
