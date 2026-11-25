@@ -36,7 +36,7 @@ class SellerUI:
 
         await state.set_state(Form.value)
         await state.update_data(edit="s:" + key, **context)
-        await message.answer(prompt + "\n/cancel — отмена.")
+        await message.answer(prompt)
 
     async def workspace(self, message, state=None, *, page=0, view="new"):
         if state:
@@ -349,7 +349,7 @@ class SellerUI:
             if chat:
                 await state.update_data(chat_id=chat["id"])
                 await state.set_state(Form.reply)
-                await message.answer("Напишите ответ. Перед отправкой будет предпросмотр. /cancel")
+                await message.answer("Напишите ответ. Перед отправкой будет предпросмотр.")
         elif action == "quick":
             if parts[2] == "edit":
                 await self.seller_prompt(
@@ -453,7 +453,7 @@ class SellerUI:
             await state.set_state(Form.stock)
             await message.answer(
                 "Пришлите TXT UTF-8 или текст: одна позиция в строке. Первая строка cost=12.50 задаёт себестоимость одной выдачи. "
-                "Реквизиты хранятся зашифрованно. /cancel"
+                "Реквизиты хранятся зашифрованно."
             )
         elif action == "account":
             account = self.db.one("SELECT * FROM own_accounts WHERE id=?", (int(parts[2]),))
@@ -620,7 +620,7 @@ class SellerUI:
             await state.set_state(Form.binding)
             await self.binding_input(message.model_copy(update={"text": parts[2]}), state)
         else:
-            await message.answer("Раздел недоступен. /menu")
+            await message.answer("Раздел недоступен.")
         return True
 
     async def seller_value(self, message, state, key, text, context):
@@ -699,6 +699,6 @@ class SellerUI:
                 raise ValueError("Неизвестное поле")
             self.db.audit("seller_setting_changed", key)
             await state.clear()
-            await message.answer("Сохранено. /menu")
+            await message.answer("Сохранено.")
         except (ValueError, KeyError, ArithmeticError):
-            await message.answer("Проверьте формат и ограничения. /cancel — отмена.")
+            await message.answer("Проверьте формат и ограничения.")

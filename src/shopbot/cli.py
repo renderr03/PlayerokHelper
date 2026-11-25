@@ -21,8 +21,10 @@ async def doctor(config):
     if not config.encryption_key:
         raise ValueError("Заполните STOCK_ENCRYPTION_KEY")
     db = Database(config.data_dir / "shop.sqlite", config.encryption_key)
-    market = market_from_config(config)
-    kosell = KOSell(config.kosell_url, config.kosell_key)
+    market = market_from_config(config, db)
+    kosell = KOSell(
+        config.kosell_url, db.decrypt(db.get("kosell_token")) if db.get("kosell_token") else config.kosell_key
+    )
     try:
         ready, issues = await readiness(db, market, kosell, needs_kosell=needs_kosell(db))
         print(json.dumps({"ready": ready, "issues": issues}, ensure_ascii=False, indent=2))
@@ -47,7 +49,7 @@ async def verify_visibility(config, item_id):
 
 async def _verify_visibility(config, item_id):
     db = Database(config.data_dir / "shop.sqlite", config.encryption_key)
-    market = market_from_config(config)
+    market = market_from_config(config, db)
     try:
         before = await market.profile()
         if not market.visibility:

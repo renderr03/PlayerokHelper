@@ -20,7 +20,10 @@ def binding_fingerprint(binding):
 
 
 async def connection_snapshot(db, market, kosell, *, check_kosell=True):
-    result = {"issues": [], "services": {}}
+    result = {
+        "issues": ["visibility_restore_pending"] if db.get("visibility_test_pending") else [],
+        "services": {},
+    }
     for name, client, method in [("playerok", market, "profile"), ("kosell", kosell, "balance")]:
         if name == "kosell" and not check_kosell:
             continue

@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import pytest
 from aiogram import Bot
 from aiogram.client.session.base import BaseSession
-from aiogram.methods import AnswerCallbackQuery, GetMe, SendDocument, SendMessage
+from aiogram.methods import AnswerCallbackQuery, DeleteMessage, GetMe, SendDocument, SendMessage
 from aiogram.types import CallbackQuery, Chat, Message, MessageEntity, Update, User
 
 from shopbot.telegram_ui import TelegramUI, dispatcher
@@ -20,7 +20,7 @@ class CaptureSession(BaseSession):
 
     async def make_request(self, bot, method, timeout=None):
         self.calls.append(method)
-        if isinstance(method, AnswerCallbackQuery):
+        if isinstance(method, (AnswerCallbackQuery, DeleteMessage)):
             return True
         if isinstance(method, GetMe):
             return User(id=bot.id, is_bot=True, first_name="Shop", username="shopbot")
@@ -47,14 +47,14 @@ async def panel(app, tmp_path):
     dp = dispatcher(ui)
     counter = 0
 
-    async def send(text=None, callback=None, user=42):
+    async def send(text=None, callback=None, user=42, chat_type="private"):
         nonlocal counter
         counter += 1
         actor = User(id=user, is_bot=False, first_name="Admin")
         message = Message(
             message_id=counter,
             date=datetime.now(timezone.utc),
-            chat=Chat(id=user, type="private"),
+            chat=Chat(id=user, type=chat_type),
             from_user=actor,
             text=text,
             entities=[MessageEntity(type="bot_command", offset=0, length=len(text.split()[0]))]
@@ -157,8 +157,11 @@ async def test_setup_wizard_stock_preview_and_auth(panel):
     assert ui.db.get("setup_source") is None
     await send("/setup")
     assert "Мастер первого запуска" in session.calls[-1].text
-    assert "setup --connections" in session.calls[-1].text
-    assert "stop playerokhelper" in session.calls[-1].text
+    assert "setup --connections" not in session.calls[-1].text
+    assert "connect:home" in {
+        b.callback_data for row in session.calls[-1].reply_markup.inline_keyboard for b in row
+    }
+    assert "stop playerokhelper" not in session.calls[-1].text
     assert not ui.db.get("live_enabled")  # diagnostic UI cannot enable live actions
     await send(callback="setup:source:stock")
     assert ui.db.get("setup_source") == "stock"
@@ -286,3 +289,305 @@ async def test_maintenance_rejects_callbacks_and_messages(panel):
     await send("/bind")
     assert "приостановлены" in session.calls[-1].text
     assert not ui.db.all("SELECT * FROM bindings")
+
+
+def callbacks(method):
+    return (
+        {b.callback_data for row in method.reply_markup.inline_keyboard for b in row}
+        if method.reply_markup
+        else set()
+    )
+
+
+async def test_button_cancel_validation_and_wizard_back(panel):
+    ui, session, send = panel
+    await send(callback="bind:new")
+    assert {"ui:cancel", "ui:back"} <= callbacks(session.calls[-1])
+    await send("wrong-id")
+    assert {"ui:cancel", "ui:back"} <= callbacks(session.calls[-1])
+    item_id = "02d57c00-d5bd-4f31-8a31-ab3b2fb2af13"
+    await send(item_id)
+    assert "s:bindtype:stock" in callbacks(session.calls[-1])
+    await send(callback="s:bindtype:stock")
+    assert "Название лота" in session.calls[-1].text
+    await send("First title")
+    assert "ID игры" in session.calls[-1].text
+    await send(callback="ui:back")
+    assert "Название лота" in session.calls[-1].text
+    await send("Corrected title")
+    for value in ["0", "1", "0", "-"]:
+        await send(value)
+    assert ui.db.one("SELECT title FROM bindings")["title"] == "Corrected title"
+    await send(callback="text:greeting")
+    await send(callback="ui:cancel")
+    await send("Do not save this")
+    assert ui.db.get("templates")["greeting"] != "Do not save this"
+    assert "menu:home" in callbacks(session.calls[-1])
+
+
+async def test_private_token_connection_is_encrypted_and_live_without_restart(panel):
+    from aiogram.methods import DeleteMessage
+    from conftest import FakeMarket
+
+    from shopbot.connections import ManagedClient
+
+    ui, session, send = panel
+    candidates = []
+
+    class Candidate(FakeMarket):
+        def __init__(self, payload, visibility):
+            super().__init__()
+            assert payload["cookie"] == "token=private-credential"
+            candidates.append(self)
+
+        async def close(self):
+            pass
+
+    ui.playerok_factory = Candidate
+    await send("/start")
+    assert "connect:playerok" in callbacks(session.calls[-1])
+    await send(callback="connect:playerok")
+    assert {"connect:email", "connect:token"} <= callbacks(session.calls[-1])
+    await send(callback="connect:token")
+    await send("private-credential", user=999)
+    assert not candidates
+    await send("private-credential")
+    assert len(candidates) == 1
+    assert isinstance(ui.engine.market, ManagedClient)
+    assert ui.engine.market.current is candidates[0]
+    assert ui.db.get("profile")["id"] == "seller"
+    assert b"private-credential" not in ui.db.path.read_bytes()
+    assert "private-credential" not in "".join(m.text for m in session.calls if isinstance(m, SendMessage))
+    assert any(isinstance(m, DeleteMessage) for m in session.calls)
+    assert ui.db.get("live_enabled") is False
+    await ui.engine.market.close()
+
+
+async def test_email_flow_cancel_cooldown_attempt_limit_and_no_secret_echo(panel):
+    from conftest import FakeMarket
+
+    from shopbot.models import ServiceError
+
+    ui, session, send = panel
+    created = []
+
+    class Login:
+        def __init__(self):
+            self.closed = False
+            self.calls = []
+            created.append(self)
+
+        async def send(self, email):
+            assert email == "owner@example.org"
+
+        async def confirm(self, email, code):
+            self.calls.append(code)
+            if code != "123456":
+                raise ServiceError("wrong_code")
+            return {"cookie": "token=email-secret", "user_agent": "test-browser"}
+
+        async def close(self):
+            self.closed = True
+
+    class Candidate(FakeMarket):
+        def __init__(self, payload, visibility):
+            super().__init__()
+            assert payload["cookie"] == "token=email-secret"
+
+        async def close(self):
+            pass
+
+    ui.login_factory, ui.playerok_factory = Login, Candidate
+    await send(callback="connect:email")
+    await send("owner@example.org")
+    assert "Код запрошен" in session.calls[-1].text
+    await send(callback="ui:cancel")
+    assert created[0].closed and not ui.logins
+    await send("123456")
+    assert not ui.db.get("playerok_session")
+    await send(callback="connect:email")
+    await send("owner@example.org")
+    assert len(created) == 1  # cancellation cannot bypass the resend limit
+    ui.db.set("login_retry:42", 0)
+    await send("owner@example.org")
+    for _ in range(5):
+        await send("000000")
+    assert created[1].closed and not ui.logins
+    await send("123456")
+    assert not ui.db.get("playerok_session")
+    ui.db.set("login_retry:42", 0)
+    await send(callback="connect:email")
+    await send("owner@example.org")
+    await send("123456")
+    assert ui.db.get("playerok_session") and not ui.logins and created[-1].closed
+    assert "123456" not in "".join(m.text for m in session.calls if isinstance(m, SendMessage))
+    await ui.engine.market.close()
+
+
+async def test_visibility_button_confirm_restore_and_recovery(panel):
+    from shopbot.models import ServiceError
+
+    ui, session, send = panel
+    market = ui.engine.market
+    item_id = "02d57c00-d5bd-4f31-8a31-ab3b2fb2af13"
+    await send(callback="connect:visibility")
+    await send("https://playerok.com/products/" + item_id + "-test")
+    assert not market.transitions
+    await send(callback="connect:visibility:run", user=999)
+    assert not market.transitions
+    await send(callback="connect:visibility:run")
+    assert market.transitions == [(item_id, False), (item_id, True)]
+    assert ui.db.get("visibility_proof")["item_id"] == item_id
+    assert not ui.db.get("visibility_test_pending")
+    await send(callback="connect:visibility:run")
+    assert len(market.transitions) == 2  # confirmation is single use
+    original = market.set_visible
+
+    async def lost_hide(item, visible):
+        await original(item, visible)
+        if not visible:
+            raise ServiceError("lost_hide", ambiguous=True)
+
+    market.set_visible = lost_hide
+    with pytest.raises(ServiceError):
+        await ui.test_visibility(item_id)
+    assert (await market.item(item_id))["status"] == "APPROVED"
+    assert ui.db.get("visibility_proof") is None
+    market.items[item_id]["status"] = "PAUSED"
+    ui.db.set("visibility_test_pending", {"account_id": "seller", "item_id": item_id})
+    await ui.recover_visibility()
+    assert (await market.item(item_id))["status"] == "APPROVED"
+    assert ui.db.get("visibility_test_pending") is None
+
+
+async def test_cannot_mix_playerok_stores_or_replace_supplier_during_rental(panel):
+    from conftest import FakeMarket, binding, order
+
+    from shopbot.models import now
+
+    ui, _, _ = panel
+    binding(ui.db)
+
+    class Candidate(FakeMarket):
+        user_id = "other-store"
+
+        def __init__(self, payload, visibility):
+            super().__init__()
+            self.closed = False
+
+        async def close(self):
+            self.closed = True
+
+    candidate = Candidate(None, None)
+    ui.playerok_factory = lambda *args: candidate
+    with pytest.raises(ValueError, match="another_store"):
+        await ui.apply_playerok({"cookie": "token=test-token", "user_agent": "test-browser"})
+    assert candidate.closed and ui.db.get("playerok_session") is None
+    order(ui.engine, ui.engine.market.current)
+    ui.engine.update("order1", stage="delivered", expires_at=now() + 3600)
+    with pytest.raises(ValueError, match="unsettled_orders"):
+        await ui.apply_kosell("new-supplier-token")
+    assert ui.db.get("kosell_token") is None
+
+
+async def test_provider_key_buttons_and_simple_help(panel):
+    ui, session, send = panel
+    await send(callback="x:help:stars")
+    assert "API-ключ" in session.calls[-1].text
+    assert "ui:cancel" in callbacks(session.calls[-1])
+    await send("split-private-key")
+    row = ui.db.one("SELECT * FROM providers")
+    assert row["preset"] == "split" and not row["enabled"]
+    assert ui.db.decrypt(row["token"]) == "split-private-key"
+    assert b"split-private-key" not in ui.db.path.read_bytes()
+    await send(callback="x:help:smm")
+    assert {"connect:key:twiboost", "connect:key:vexboost", "connect:key:jap"} <= callbacks(session.calls[-1])
+    for action in ["setup:home", "menu:help", "menu:account", "updates:home"]:
+        await send(callback=action)
+    all_text = "\n".join(m.text for m in session.calls if isinstance(m, SendMessage))
+    for forbidden in ["/cancel", "/setup", "/reply", "systemctl", ".venv/bin", "sudo ", "provider-setup"]:
+        assert forbidden not in all_text
+
+
+async def test_credentials_are_not_accepted_in_groups(panel):
+    ui, session, send = panel
+    await send(callback="connect:token", chat_type="group")
+    assert "личном чате" in session.calls[-1].text
+    await send("group-private-token", chat_type="group")
+    assert not ui.db.get("playerok_session")
+    await send(callback="connect:key:split", chat_type="group")
+    await send("group-private-key", chat_type="group")
+    assert not ui.db.all("SELECT * FROM providers")
+
+
+async def test_reconnect_same_account_can_recover_pending_visibility(panel):
+    from conftest import FakeMarket, binding
+
+    ui, _, _ = panel
+    binding(ui.db)
+    ui.db.set("visibility_test_pending", {"item_id": "test-lot", "account_id": "seller"})
+
+    class Candidate(FakeMarket):
+        def __init__(self, *args):
+            super().__init__()
+            self.items["test-lot"] = {"id": "test-lot", "status": "PAUSED", "user": {"id": "seller"}}
+
+        async def close(self):
+            pass
+
+    ui.playerok_factory = Candidate
+    await ui.apply_playerok({"cookie": "token=renewed-session", "user_agent": "test-browser"})
+    assert ui.db.get("visibility_test_pending")
+    await ui.recover_visibility()
+    assert not ui.db.get("visibility_test_pending")
+    assert (await ui.engine.market.item("test-lot"))["status"] == "APPROVED"
+    await ui.engine.market.close()
+
+
+async def test_supplier_swap_rechecks_intents_after_balance_await(panel):
+    from conftest import binding, order
+
+    ui, _, _ = panel
+    binding(ui.db)
+
+    class Candidate:
+        closed = False
+
+        async def balance(self):
+            # Another worker accepts a paid order while the candidate key is checked.
+            order(ui.engine, ui.engine.market)
+            return {"balance_rub": 100}
+
+        async def close(self):
+            self.closed = True
+
+    candidate = Candidate()
+    ui.kosell_factory = lambda *args: candidate
+    with pytest.raises(ValueError, match="unsettled_orders"):
+        await ui.apply_kosell("candidate-secret-key")
+    assert candidate.closed and not ui.db.get("kosell_token")
+
+
+async def test_failed_restore_remains_persisted_and_disables_readiness(panel):
+    from shopbot.models import ServiceError
+    from shopbot.runtime import readiness
+
+    ui, _, _ = panel
+    market = ui.engine.market
+    original = market.set_visible
+
+    async def fail_restore(item, visible):
+        if visible:
+            raise ServiceError("restore_failed")
+        return await original(item, visible)
+
+    market.set_visible = fail_restore
+    with pytest.raises(ServiceError):
+        await ui.test_visibility("test-lot")
+    assert ui.db.get("visibility_test_pending") and not ui.db.get("visibility_proof")
+    await readiness(ui.db, ui.engine.market, ui.engine.kosell, needs_kosell=False)
+    assert not ui.db.get("live_enabled")
+    market.set_visible = original
+    await ui.recover_visibility()
+    assert not ui.db.get("visibility_test_pending")
+    assert (await market.item("test-lot"))["status"] == "APPROVED"

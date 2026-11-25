@@ -12,6 +12,7 @@ from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError, Telegra
 from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import SimpleEventIsolation
 from aiogram.types import (
     BufferedInputFile,
     CallbackQuery,
@@ -21,6 +22,7 @@ from aiogram.types import (
 )
 
 from . import __version__
+from .account_ui import AccountUI, ConnectionForm
 from .analytics import Analytics
 from .checks import binding_fingerprint, connection_snapshot, needs_kosell, preview_delivery
 from .engine import Engine
@@ -28,6 +30,7 @@ from .external_ui import ExternalUI
 from .loyalty import Loyalty
 from .maintenance import update_status
 from .models import ServiceError, money, now, rub, timestamp
+from .navigation import NavigationMessages, PanelNavigation
 from .rentals import Rentals
 from .seller_ui import MODE_NAMES, SellerUI
 from .updates import Updates, read_json, release_summary
@@ -82,7 +85,7 @@ class AdminOnly(BaseMiddleware):
         return await handler(event, data)
 
 
-class TelegramUI(ExternalUI, SellerUI):
+class TelegramUI(AccountUI, ExternalUI, SellerUI):
     def __init__(self, bot: Bot, engine: Engine, admins, data_dir, project_dir=None):
         self.bot, self.engine, self.db = bot, engine, engine.db
         self.data_dir = data_dir
@@ -92,6 +95,10 @@ class TelegramUI(ExternalUI, SellerUI):
         maintenance = self.updates.folder / "maintenance.json" if self.updates.folder else None
         self.router.message.outer_middleware(AdminOnly(admins, maintenance))
         self.router.callback_query.outer_middleware(AdminOnly(admins, maintenance))
+        self.init_connections()
+        self.router.message.outer_middleware(PanelNavigation())
+        self.router.callback_query.outer_middleware(PanelNavigation())
+        self.bot.session.middleware(NavigationMessages())
         self.register()
 
     def register(self):
@@ -107,6 +114,16 @@ class TelegramUI(ExternalUI, SellerUI):
         r.message.register(self.report_command, Command("report"))
         r.message.register(self.reply_command, Command("reply"))
         r.message.register(self.import_history, Command("import"))
+        r.message.register(
+            self.connection_input,
+            StateFilter(
+                ConnectionForm.token,
+                ConnectionForm.email,
+                ConnectionForm.code,
+                ConnectionForm.key,
+                ConnectionForm.visibility,
+            ),
+        )
         r.message.register(self.value, StateFilter(Form.value))
         r.message.register(self.binding_input, StateFilter(Form.binding))
         r.message.register(self.stock_input, StateFilter(Form.stock))
@@ -116,6 +133,7 @@ class TelegramUI(ExternalUI, SellerUI):
 
     async def start(self, message: Message, state: FSMContext):
         await state.clear()
+        await self.expire_logins(message.chat.id)
         self.db.set("update_offer", None)
         status = (
             "⏸ пауза"
@@ -127,9 +145,13 @@ class TelegramUI(ExternalUI, SellerUI):
         await message.answer(
             f"PlayerokHelper {__version__}\nДобро пожаловать! Выберите действие.\n"
             f"Автоматизация: {status}\n"
-            f"Готовность подключения: {self.db.get('readiness_status', 'не проверена')}",
+            f"Готовность подключения: {self.readiness_label()}",
             reply_markup=keyboard(
                 [
+                    (
+                        "➕ Добавить аккаунт Playerok" if not self.db.get("profile") else "🔌 Подключения",
+                        "connect:playerok" if not self.db.get("profile") else "connect:home",
+                    ),
                     ("💬 Рабочее окно", "s:inbox:new:0"),
                     ("🎁 Бонусные товары", "s:loyalty"),
                     ("🧙 Настроить магазин", "setup:home"),
@@ -147,12 +169,20 @@ class TelegramUI(ExternalUI, SellerUI):
     async def cancel(self, message, state):
         await state.clear()
         self.db.set("update_offer", None)
-        await message.answer("Ввод отменён. /menu")
+        await self.expire_logins(message.chat.id)
+        await message.answer(
+            "Ввод отменён.",
+            reply_markup=keyboard([("🏠 Главное меню", "menu:home"), ("Подключения", "connect:home")]),
+        )
+
+    def readiness_label(self):
+        value = self.db.get("readiness_status", "не проверено")
+        return "требует настройки" if "_" in value else value
 
     async def status(self, message, state=None):
         status = self.engine.diagnostic()
         await message.answer(
-            f"Подключение: {self.db.get('readiness_status', 'не проверено')}\n"
+            f"Подключение: {self.readiness_label()}\n"
             f"Пауза: {'да' if status['paused'] else 'нет'}\nЗаказов: {status['orders']}\n"
             f"Требуют проверки: {status['review']}\nНеопределённые отправки: {status['uncertain']}\n"
             f"Внешних заказов в работе: {status['provider_pending']}\nВнешних заказов на сверке: {status['provider_review']}\n"
@@ -218,20 +248,21 @@ class TelegramUI(ExternalUI, SellerUI):
             f"{mark(visibility_ok)} 3. Проверить скрытие и восстановление",
             f"{mark(bindings)} 4. Привязать первый лот",
             f"{mark(preview_ok)} 5. Проверить сценарий в карточке лота (актуальность 60 секунд)",
-            "\nНа сервере, в каталоге проекта:",
-            ".venv/bin/playerokhelper setup --connections",
-            "sudo systemctl restart playerokhelper",
-            "Ключи и сессия вводятся только в консоли. Не присылайте их в чат.",
-            "\nДля живого теста выберите свой активный тестовый лот и выполните на сервере:",
-            "sudo systemctl stop playerokhelper",
-            ".venv/bin/playerokhelper verify-visibility --item UUID_ЛОТА --confirm-reversible-test",
-            "sudo systemctl start playerokhelper",
-            "После теста снова откройте /setup. От root команды выполняются без sudo. "
-            "Для Docker и ручного запуска — инструкция в репозитории.",
+            "\nВыберите нужный шаг кнопкой ниже.",
         ]
         if snapshot["issues"]:
-            lines.append("\nТребует внимания: " + ", ".join(snapshot["issues"]))
+            lines.append(
+                "\n"
+                + (
+                    "Добавьте аккаунт Playerok."
+                    if not playerok_ok
+                    else "Завершите отмеченные шаги настройки."
+                )
+            )
         rows = [
+            ("➕ Добавить аккаунт Playerok" if not playerok_ok else "🔌 Подключения", "connect:home"),
+            ("🧪 Проверить скрытие тестового лота", "connect:visibility"),
+            ("🎮 Подключить KOSell", "connect:key:kosell"),
             ("📦 Использовать свой склад", "setup:source:stock"),
             ("🎮 Использовать KOSell", "setup:source:kosell"),
             ("Telegram Stars", "setup:source:stars"),
@@ -388,8 +419,32 @@ class TelegramUI(ExternalUI, SellerUI):
         await query.answer()
         message = query.message
         data = query.data or ""
+        if data == "ui:cancel":
+            return await self.cancel(message, state)
+        if data == "ui:back":
+            context = await state.get_data()
+            stack = context.get("_nav_stack", [])
+            if stack:
+                previous = stack.pop()
+                await state.set_state(previous["state"])
+                await state.set_data({**previous["data"], "_nav_stack": stack})
+                prompt = previous.get("prompt")
+                if prompt:
+                    return await message.answer(
+                        prompt["text"],
+                        reply_markup=InlineKeyboardMarkup.model_validate(prompt["markup"])
+                        if prompt["markup"]
+                        else None,
+                    )
+            return await self.cancel(message, state)
+        if (await state.get_state() or "").startswith("ConnectionForm:") and not data.startswith("connect:"):
+            await self.expire_logins(message.chat.id)
         await state.set_state(None)
         try:
+            if data == "connect:status":
+                return await self.status(message)
+            if await self.connection_callback(message, data, state):
+                return
             if await self.external_callback(message, data, state):
                 return
             if await self.seller_callback(message, data, state):
@@ -446,7 +501,7 @@ class TelegramUI(ExternalUI, SellerUI):
                     return
                 await state.set_state(Form.value)
                 await state.update_data(edit=key)
-                return await message.answer("Введите целый порог от 0 до 10000. /cancel — отмена.")
+                return await message.answer("Введите целый порог от 0 до 10000.")
             if data.startswith("preview:lot:"):
                 return await self.preview_menu(message, data.split(":", 2)[2])
             if data.startswith("preview:extend:"):
@@ -507,6 +562,8 @@ class TelegramUI(ExternalUI, SellerUI):
                     "Управление магазином",
                     reply_markup=keyboard(
                         [
+                            ("🔌 Подключения", "connect:home"),
+                            ("📋 Статус магазина", "connect:status"),
                             ("📦 Привязанные лоты", "bindings:all"),
                             ("🧾 Последние заказы", "orders:0"),
                             ("⚠️ Неопределённые отправки", "uncertain:list"),
@@ -528,7 +585,7 @@ class TelegramUI(ExternalUI, SellerUI):
                 if key not in {"daily_report", "paused", "paid_enabled", "offline_override"}:
                     return
                 self.db.set(key, not self.db.get(key))
-                return await message.answer("Сохранено. /menu")
+                return await message.answer("Сохранено.")
             if data.startswith("feature:"):
                 key = data.split(":")[1]
                 if key not in LABELS:
@@ -560,7 +617,7 @@ class TelegramUI(ExternalUI, SellerUI):
                 await state.update_data(edit="template", template=key)
                 return await message.answer(
                     "Пришлите новый текст (до 2000 символов). Переменные: "
-                    "{buyer}, {order}, {title}, {expires}. /cancel — отмена."
+                    "{buyer}, {order}, {title}, {expires}."
                 )
             if data.startswith("scope:"):
                 scope = data.split(":", 1)[1]
@@ -588,7 +645,7 @@ class TelegramUI(ExternalUI, SellerUI):
                     return
                 await state.set_state(Form.value)
                 await state.update_data(edit=key)
-                return await message.answer(prompts[key] + "\n/cancel — отмена")
+                return await message.answer(prompts[key])
             if data == "promotion":
                 return await message.answer(
                     f"Платные действия: {'включены' if self.db.get('paid_enabled') else 'выключены'}\n"
@@ -628,7 +685,7 @@ class TelegramUI(ExternalUI, SellerUI):
                     "instruction": "Инструкция покупателю (до 1000 символов)",
                     "bump_interval": "Интервал поднятия, минут (минимум 5)",
                 }
-                return await message.answer(names[field] + ". /cancel — отмена")
+                return await message.answer(names[field] + ".")
             if data.startswith("stock:"):
                 item_id = data[6:]
                 binding = self.db.one("SELECT * FROM bindings WHERE item_id=? AND module='stock'", (item_id,))
@@ -639,7 +696,7 @@ class TelegramUI(ExternalUI, SellerUI):
                 return await message.answer(
                     "Пришлите UTF-8 TXT или текст: одна строка — один товар. "
                     "Для общей себестоимости добавьте первой строкой «cost=12.50». "
-                    "Без неё себестоимость будет неизвестной. /cancel — отмена"
+                    "Без неё себестоимость будет неизвестной."
                 )
             if data.startswith("orders:"):
                 return await self.orders(message, max(0, int(data.split(":")[1])))
@@ -651,7 +708,7 @@ class TelegramUI(ExternalUI, SellerUI):
                     return
                 await state.set_state(Form.reply)
                 await state.update_data(chat_id=order["chat_id"])
-                return await message.answer(f"Ответ в чат {order['chat_id']}. Пришлите текст. /cancel")
+                return await message.answer(f"Ответ в чат {order['chat_id']}. Пришлите текст.")
             if data.startswith("reply_send:"):
                 context = await state.get_data()
                 if "reply_text" not in context or data.split(":", 1)[1] != context.get("reply_nonce"):
@@ -735,7 +792,7 @@ class TelegramUI(ExternalUI, SellerUI):
                 return await message.answer(
                     "Проверьте в KOSell, что именно это продление выполнено. "
                     "Пришлите фактическую стоимость списания в рублях. "
-                    "Бот сверит новый срок и завершит выдачу, без повторного списания. /cancel"
+                    "Бот сверит новый срок и завершит выдачу, без повторного списания."
                 )
             if data == "uncertain:list":
                 rows = self.db.all(
@@ -784,7 +841,7 @@ class TelegramUI(ExternalUI, SellerUI):
                 await state.update_data(edit="expense", action_id=data[8:])
                 return await message.answer(
                     "После проверки пришлите «списано 12.50» с фактической суммой "
-                    "или «не списано». Меняется только местный учёт. /cancel"
+                    "или «не списано». Меняется только местный учёт."
                 )
             if data == "analytics:items":
                 return await self.catalog(message, state, module="", role="report", page=0)
@@ -804,7 +861,7 @@ class TelegramUI(ExternalUI, SellerUI):
                 path = self.db.backup(self.data_dir / "backups")
                 return await message.answer(f"Резервная копия создана: {path.name}. Хранится на сервере.")
         except (ValueError, KeyError, ArithmeticError):
-            await message.answer("Некорректное значение. Проверьте ввод или используйте /cancel.")
+            await message.answer("Некорректное значение. Проверьте ввод или нажмите «Отменить».")
         except ServiceError as exc:
             await message.answer(
                 f"Сервис не выполнил операцию: {exc.code}. Проверьте состояние перед повтором."
@@ -905,7 +962,7 @@ class TelegramUI(ExternalUI, SellerUI):
         await state.clear()
         await state.set_state(Form.binding)
         await state.update_data(step=0, binding={})
-        await message.answer("Пришлите UUID готового лота Playerok. Ссылка не подходит. /cancel — отмена")
+        await message.answer("Пришлите UUID готового лота Playerok. Ссылка не подходит.")
 
     async def binding_input(self, message, state):
         data = await state.get_data()
@@ -999,7 +1056,7 @@ class TelegramUI(ExternalUI, SellerUI):
             else:
                 await message.answer(prompt)
         except (ValueError, ArithmeticError):
-            await message.answer("Не удалось принять значение. Проверьте формат и попробуйте снова. /cancel")
+            await message.answer("Не удалось принять значение. Проверьте формат и попробуйте снова.")
 
     async def value(self, message, state):
         context = await state.get_data()
@@ -1138,9 +1195,9 @@ class TelegramUI(ExternalUI, SellerUI):
                 raise ValueError()
             self.db.audit("settings_changed", key)
             await state.set_state(None)
-            await message.answer("Сохранено. /menu")
+            await message.answer("Сохранено.")
         except (ValueError, KeyError, ArithmeticError):
-            await message.answer("Некорректное значение. Попробуйте снова или /cancel.")
+            await message.answer("Некорректное значение. Попробуйте снова или нажмите «Отменить».")
         except ServiceError as exc:
             await message.answer(f"Сверка недоступна: {exc.code}. Данные не изменены.")
 
@@ -1176,12 +1233,12 @@ class TelegramUI(ExternalUI, SellerUI):
             await state.clear()
             await message.answer(f"Загружено позиций: {count}. Данные хранятся в зашифрованном виде.")
         except (ValueError, UnicodeError, ArithmeticError):
-            await message.answer("Проверьте UTF-8, число строк и себестоимость. /cancel")
+            await message.answer("Проверьте UTF-8, число строк и себестоимость.")
 
     async def reply_command(self, message, state):
         parts = (message.text or "").split(maxsplit=2)
         if len(parts) < 3 or not self.db.one("SELECT id FROM chats WHERE id=?", (parts[1],)):
-            return await message.answer("/reply ID_ЧАТА текст. Чат должен быть уже известен боту.")
+            return await message.answer("Выберите чат в рабочем окне и нажмите «Ответить».")
         await state.update_data(chat_id=parts[1])
         await self.reply_preview(message, state, parts[2])
 
@@ -1287,7 +1344,7 @@ class TelegramUI(ExternalUI, SellerUI):
         try:
             await self.send_report(message, **(self.parse_filters(args[1]) if len(args) > 1 else {}))
         except ValueError:
-            await message.answer("/report ГГГГ-ММ-ДД ГГГГ-ММ-ДД [item=UUID] [module=kosell|stock|extend]")
+            await message.answer("Выберите период в разделе «Аналитика».")
 
     async def send_report(self, message, **filters):
         path = self.analytics.export(self.data_dir / "reports" / f"report-{uuid.uuid4().hex}.xlsx", **filters)
@@ -1304,15 +1361,23 @@ class TelegramUI(ExternalUI, SellerUI):
 
     async def help(self, message, state=None):
         await message.answer(
-            "/setup — мастер подключения и первого лота\n"
-            "/version — версия, проверка обновлений и журнал\n"
-            "Настройка: /bind — готовый лот; затем загрузите склад или укажите игру KOSell.\n"
-            "/status — подключение\n/report — Excel\n/reply ID_ЧАТА текст — ответ с предпросмотром\n"
-            "/cancel — отмена формы\n/menu — главное меню\n\n"
-            "Покупатель: !помощь, !аренды, !код <номер>, !срок <номер>, !продлить <номер>, "
-            "!инструкция, !бонус, !оператор, !получатель <заказ> <данные>, !подтвердить <код>, !заказ <номер>.\n\n"
+            "Подключите Playerok в разделе «Подключения», затем выберите источник товаров и привяжите лот в мастере настройки.\n"
+            "Открывайте чаты и отвечайте покупателям через «Рабочее окно». Отчёты доступны в «Аналитике».\n\n"
             "Пауза останавливает закупки и выдачу, связанные лоты снимаются с продажи. "
-            "Неопределённые списания и отправки требуют сверки в управлении аккаунтом."
+            "Спорные списания и отправки можно сверить в управлении магазином.",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="Подключить аккаунт", callback_data="connect:home")],
+                    [InlineKeyboardButton(text="Настроить магазин", callback_data="setup:home")],
+                    [
+                        InlineKeyboardButton(
+                            text="Инструкция на GitHub",
+                            url="https://github.com/renderr03/PlayerokHelper#readme",
+                        )
+                    ],
+                    [InlineKeyboardButton(text="‹ Главное меню", callback_data="menu:home")],
+                ]
+            ),
         )
 
     async def send_admin(self, target, text, order_id=None, purpose="message"):
@@ -1325,7 +1390,11 @@ class TelegramUI(ExternalUI, SellerUI):
                     int(target), BufferedInputFile(path.read_bytes(), filename=text)
                 )
             else:
-                markup = keyboard([("Открыть заказ", "order:" + order_id)]) if order_id else None
+                markup = (
+                    keyboard([("Открыть заказ", "order:" + order_id)])
+                    if order_id
+                    else keyboard([("Открыть магазин", "menu:home")])
+                )
                 if purpose == "update":
                     markup = keyboard([("⬆️ Обновить бота", "updates:home")])
                 result = await self.bot.send_message(int(target), text[:4000], reply_markup=markup)
@@ -1339,6 +1408,6 @@ class TelegramUI(ExternalUI, SellerUI):
 
 
 def dispatcher(ui: TelegramUI):
-    dp = Dispatcher()
+    dp = Dispatcher(events_isolation=SimpleEventIsolation())
     dp.include_router(ui.router)
     return dp

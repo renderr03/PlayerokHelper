@@ -18,7 +18,7 @@ class ExternalUI:
 
         await state.set_state(Form.value)
         await state.update_data(edit="x:" + key, **context)
-        await message.answer(prompt + "\n/cancel — отмена.")
+        await message.answer(prompt)
 
     async def external_home(self, message, mode):
         kind = "split" if mode == "stars" else "smm"
@@ -215,12 +215,8 @@ class ExternalUI:
             await self.external_home(message, parts[2])
         elif action == "help":
             mode = parts[2]
-            await message.answer(
-                "Зарегистрируйте аккаунт поставщика и получите API-ключ. Ключ вводится скрыто в консоли сервера:\n"
-                "cd /root/PlayerokHelper\n.venv/bin/playerokhelper provider-setup --preset "
-                + ("split" if mode == "stars" else "twiboost")
-                + "\n\nЕсли проект установлен в другом каталоге, используйте его. Для SMM доступны также vexboost и jap. "
-                "Затем проверьте подключение, задайте курс учёта и включите поставщика. Seed-фраза TON не требуется для работы с балансом Split."
+            await self.connection_callback(
+                message, "connect:key:split" if mode == "stars" else "connect:smm", state
             )
         elif action == "provider":
             await self.provider_card(message, int(parts[2]))
@@ -680,10 +676,12 @@ class ExternalUI:
                     f"{wizard['title']}\nЛот: {wizard['item_id']}\nКоличество: {wizard['quantity']}\n"
                     f"Лимиты: {wizard['max_native']} {wizard['currency']} / {money(wizard['max_cost'])}\n"
                     "Будет сохранён на паузе до проверки.",
-                    reply_markup=buttons([("Сохранить лот", "x:save:" + wizard["token"])]),
+                    reply_markup=buttons(
+                        [("Сохранить лот", "x:save:" + wizard["token"]), ("Отменить", "ui:cancel")]
+                    ),
                 )
             raise ValueError("Откройте настройку заново")
         except (ValueError, KeyError, TypeError, ArithmeticError, ServiceError):
             await message.answer(
-                "Значение не принято. Проверьте формат, валюту, лимиты услуги и текущую настройку. /cancel — отмена."
+                "Значение не принято. Проверьте формат, валюту, лимиты услуги и текущую настройку."
             )

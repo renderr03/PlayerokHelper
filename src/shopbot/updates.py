@@ -150,7 +150,7 @@ class Updates:
             self.db.notify(
                 f"🔔 PlayerokHelper {tag}\nУстановлена версия {__version__}.\n\n"
                 f"{cached['body']}\n\nПодробности: {cached['url']}\n\n"
-                "Нажмите «Обновить бота» или откройте /version.",
+                "Нажмите «Обновить бота», чтобы посмотреть подробности.",
                 "release:" + tag,
                 purpose="update",
             )
@@ -211,7 +211,7 @@ class Updates:
         history = self.db.get("update_history", [])
         self.db.set("update_history", [result, *history][:10])
         self.db.notify(
-            messages[result["status"]] + " Откройте /version для подробностей.",
+            messages[result["status"]] + " Подробности — по кнопке ниже.",
             "update-result:" + result["nonce"],
             purpose="update",
         )

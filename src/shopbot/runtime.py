@@ -15,6 +15,7 @@ from .alerts import Alerts
 from .analytics import Analytics
 from .checks import connection_snapshot, needs_kosell
 from .config import Config
+from .connections import ManagedClient
 from .conversations import Conversations
 from .db import Database
 from .engine import Engine
@@ -48,7 +49,9 @@ class UnconfiguredPlayerok:
         return unavailable
 
 
-def market_from_config(config):
+def market_from_config(config, db=None):
+    if db and db.get("playerok_session"):
+        return Playerok(json.loads(db.decrypt(db.get("playerok_session"))), config.visibility_file)
     if not config.session_file.exists():
         return UnconfiguredPlayerok()
     session = json.loads(config.session_file.read_text())
@@ -158,6 +161,8 @@ class Runtime:
         return True
 
     async def connections(self):
+        await self.ui.expire_logins()
+        await self.ui.recover_visibility()
         await readiness(self.db, self.engine.market, self.engine.kosell, needs_kosell=needs_kosell(self.db))
         snapshot = self.db.get("connection_snapshot")
         Alerts(self.engine).connections(snapshot["services"])
@@ -228,7 +233,7 @@ class Runtime:
                     delay = max(delay, min(3600, exc.retry_after))
                 logging.getLogger("shopbot").error("Worker %s failed: %s", name, type(exc).__name__)
                 self.db.notify(
-                    "Фоновая задача " + name + ": временная ошибка. Проверьте /status.",
+                    "Фоновая задача " + name + ": временная ошибка. Откройте статус магазина в меню бота.",
                     f"worker:{name}:{int(now() // 3600)}",
                 )
             await asyncio.sleep(delay)
@@ -270,11 +275,17 @@ async def serve(config: Config):
     if db.get("cutoff") is None:
         db.set("cutoff", now())
     db.set("live_enabled", False)
-    market = market_from_config(config)
-    kosell = KOSell(config.kosell_url, config.kosell_key)
+    market = ManagedClient(market_from_config(config, db))
+    kosell = ManagedClient(
+        KOSell(
+            config.kosell_url,
+            db.decrypt(db.get("kosell_token")) if db.get("kosell_token") else config.kosell_key,
+        )
+    )
     bot = Bot(config.token)
     engine = Engine(db, market, kosell, config.timezone)
     ui = TelegramUI(bot, engine, config.admins, config.data_dir, config.project_dir)
+    ui.connection_config = config
     dp = dispatcher(ui)
 
     async def handle_error(event: ErrorEvent):
@@ -297,8 +308,9 @@ async def serve(config: Config):
                     await task
                 except asyncio.CancelledError:
                     pass
-        await market.close()
-        await kosell.close()
+        await ui.expire_logins_all()
+        await engine.market.close()
+        await engine.kosell.close()
         await bot.session.close()
         db.close()
         lock.close()

@@ -345,8 +345,9 @@ for admin in settings.get('ADMIN_IDS', '').split(','):
     if not admin.strip().isdigit():
         continue
     body = urllib.parse.urlencode({'chat_id': admin.strip(), 'text':
-        'Автоматическое восстановление PlayerokHelper не завершено. Нужна проверка сервера: '
-        'systemctl status playerokhelper; journalctl -u playerokhelper-update -n 50 --no-pager.'}).encode()
+        'Автоматическое восстановление PlayerokHelper не завершено. '
+        'Нужна проверка сервера. Инструкция: '
+        'https://github.com/renderr03/PlayerokHelper/blob/main/docs/INSTALLATION.md'}).encode()
     with urllib.request.urlopen(urllib.request.Request(
             'https://api.telegram.org/bot' + token + '/sendMessage', data=body), timeout=10):
         pass

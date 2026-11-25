@@ -138,8 +138,7 @@ class Conversations:
         if command == "!оператор":
             self.db.execute("UPDATE chats SET operator_paused=1 WHERE id=?", (message.chat_id,))
             self.db.notify(
-                f"Покупатель вызвал продавца. Чат {message.chat_id}. "
-                f"Ответить: /reply {message.chat_id} <текст>",
+                f"Покупатель вызвал продавца. Чат {message.chat_id}. Ответить можно в рабочем окне бота.",
                 "operator:" + message.id,
             )
             # This acknowledgement must be delivered despite operator pause.
