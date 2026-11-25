@@ -362,6 +362,11 @@ class Playerok:
             )
         )["item"]
 
+    async def item_by_slug(self, slug: str):
+        return (
+            await self.graphql("item", {"slug": slug, "hasSupportAccess": False, "showForbiddenImage": False})
+        )["item"]
+
     async def tiers(self, item: dict):
         return (
             await self.graphql(

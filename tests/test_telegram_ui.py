@@ -453,13 +453,19 @@ async def test_visibility_button_confirm_restore_and_recovery(panel):
     await send(callback="connect:visibility")
     await send("https://playerok.com/products/" + item_id + "-test")
     assert not market.transitions
-    await send(callback="connect:visibility:run", user=999)
+    confirm = next(
+        b.callback_data
+        for row in session.calls[-1].reply_markup.inline_keyboard
+        for b in row
+        if b.callback_data.startswith("connect:visibility:run:")
+    )
+    await send(callback=confirm, user=999)
     assert not market.transitions
-    await send(callback="connect:visibility:run")
+    await send(callback=confirm)
     assert market.transitions == [(item_id, False), (item_id, True)]
     assert ui.db.get("visibility_proof")["item_id"] == item_id
     assert not ui.db.get("visibility_test_pending")
-    await send(callback="connect:visibility:run")
+    await send(callback=confirm)
     assert len(market.transitions) == 2  # confirmation is single use
     original = market.set_visible
 

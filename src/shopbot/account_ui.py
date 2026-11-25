@@ -15,6 +15,7 @@ from . import __version__
 from .access import probe_access, probe_text
 from .connections import EmailLogin, ManagedClient, session_input
 from .external import save_provider
+from .item_reference import item_reference
 from .kosell import KOSell
 from .models import ServiceError, now, rub
 from .navigation import buttons
@@ -76,6 +77,16 @@ def connection_error_text(error, *, playerok=True):
     if error.code.startswith("playerok_login_"):
         return "Вход по почте не подтверждён. Проверьте код. Если сайт требует проверку браузера или второй фактор, войдите на сайте и используйте токен."
     return "Подключение Playerok не подтверждено. Проверьте доступ к аккаунту на сайте и повторите попытку."
+
+
+def lot_error_text(error):
+    messages = {
+        "playerok_item_not_found": "Товар по этой ссылке не найден. Проверьте ссылку или выберите другой свой лот.",
+        "playerok_item_invalid": "Playerok вернул неполные данные товара. Попробуйте другую ссылку или повторите позже.",
+        "lot_not_owned": "Этот товар принадлежит другому продавцу. Пришлите ссылку на свой лот.",
+        "lot_not_active": "Этот товар сейчас не продаётся. Для проверки выберите свой активный опубликованный лот.",
+    }
+    return messages.get(error.code, "Не удалось получить товар. " + connection_error_text(error))
 
 
 class AccountUI:
@@ -236,16 +247,30 @@ class AccountUI:
             await state.clear()
             await state.set_state(ConnectionForm.visibility)
             await message.answer(
-                "Пришлите ссылку или ID своего активного тестового лота. "
+                "Пришлите обычную ссылку на свой активный тестовый товар Playerok. "
+                "Скопируйте её через «Поделиться». Полный ID товара тоже подходит. "
                 "На следующем шаге бот попросит подтверждение краткого скрытия и восстановления.",
                 reply_markup=controls("setup:home"),
             )
-        elif data == "connect:visibility:run":
+        elif data == "connect:visibility:run" or data.startswith("connect:visibility:run:"):
             context = await state.get_data()
+            form = await state.get_state()
             item_id, expires = context.get("visibility_item"), context.get("visibility_expires", 0)
+            nonce = context.get("visibility_nonce")
             await state.clear()
-            if not item_id or expires < now():
-                await message.answer("Подтверждение устарело. Выберите тестовый лот снова.")
+            if (
+                form != ConnectionForm.visibility.state
+                or not item_id
+                or expires < now()
+                or not nonce
+                or data != "connect:visibility:run:" + nonce
+            ):
+                await message.answer(
+                    "Подтверждение устарело. Выберите тестовый лот снова.",
+                    reply_markup=buttons(
+                        [("Выбрать лот", "connect:visibility"), ("‹ Настройка", "setup:home")]
+                    ),
+                )
             else:
                 await message.answer("Проверяю скрытие и восстановление лота…")
                 try:
@@ -387,21 +412,30 @@ class AccountUI:
                         ),
                     )
                 elif form == ConnectionForm.visibility.state:
-                    match = re.search(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", text)
-                    item_id = str(uuid.UUID(match.group() if match else text))
-                    await state.update_data(visibility_item=item_id, visibility_expires=now() + 120)
+                    await state.update_data(visibility_item=None, visibility_expires=0, visibility_nonce=None)
+                    item_reference(text)  # Reject invalid input before any request.
+                    await message.answer("Нахожу товар по ссылке и проверяю владельца…")
+                    item = await self.resolve_own_lot(text, active=True)
+                    item_id = item["id"]
+                    nonce = uuid.uuid4().hex[:12]
+                    await state.update_data(
+                        visibility_item=item_id, visibility_expires=now() + 120, visibility_nonce=nonce
+                    )
                     await message.answer(
+                        "Товар найден: " + str(item.get("name") or "активный лот")[:200] + "\n\n"
                         "Лот будет ненадолго скрыт и восстановлен. "
                         "Используйте свой тестовый лот без активной сделки. Продолжить?",
                         reply_markup=buttons(
                             [
-                                ("Проверить лот", "connect:visibility:run"),
+                                ("Проверить лот", "connect:visibility:run:" + nonce),
                                 ("Другой лот", "connect:visibility"),
                                 ("Отменить", "ui:cancel"),
                             ]
                         ),
                     )
             except ServiceError as exc:
+                if form == ConnectionForm.visibility.state:
+                    return await message.answer(lot_error_text(exc), reply_markup=controls("setup:home"))
                 if form == ConnectionForm.code.state and message.chat.id not in self.logins:
                     await state.clear()
                     return await message.answer(
@@ -450,12 +484,16 @@ class AccountUI:
                     ConnectionForm.code.state: "Отправьте шесть цифр из письма Playerok.",
                     ConnectionForm.token.state: "Токен не распознан. Пришлите его значение, Cookie или JSON с cookie и user_agent.",
                     ConnectionForm.key.state: "Ключ не принят. Скопируйте API-ключ из кабинета поставщика без пробелов.",
-                    ConnectionForm.visibility.state: "Пришлите ссылку с UUID или сам UUID своего активного лота.",
+                    ConnectionForm.visibility.state: "Ссылка не распознана. Нужна ссылка на товар вида https://playerok.com/products/... или полный ID товара. Ссылка на профиль не подходит. Попробуйте ещё раз.",
                 }
                 await message.answer(
                     reason or fallback.get(form, "Проверьте данные и повторите ввод."),
                     reply_markup=controls(
-                        "connect:playerok" if form != ConnectionForm.key.state else "connect:home"
+                        "setup:home"
+                        if form == ConnectionForm.visibility.state
+                        else "connect:playerok"
+                        if form != ConnectionForm.key.state
+                        else "connect:home"
                     ),
                 )
 
@@ -551,6 +589,32 @@ class AccountUI:
                 finally:
                     if not saved:
                         await client.close()
+
+    async def resolve_own_lot(self, value, *, active=False):
+        kind, reference = item_reference(value)
+        proxy = self.managed("market")
+        # Pin the client until both reads finish, so reconnecting cannot mix
+        # the profile of one account with a listing from another session.
+        async with proxy.request():
+            market = proxy.current
+            await market.profile()
+            item = await (market.item(reference) if kind == "id" else market.item_by_slug(reference))
+            if not isinstance(item, dict):
+                raise ServiceError("playerok_item_not_found")
+            try:
+                item_id = str(uuid.UUID(item["id"]))
+            except (ValueError, KeyError, TypeError, AttributeError):
+                raise ServiceError("playerok_item_invalid") from None
+            if kind == "id" and item_id != reference:
+                raise ServiceError("playerok_item_invalid")
+            owner = item.get("user")
+            if not isinstance(owner, dict) or not owner.get("id"):
+                raise ServiceError("playerok_item_invalid")
+            if owner["id"] != market.user_id:
+                raise ServiceError("lot_not_owned")
+            if active and item.get("status") != "APPROVED":
+                raise ServiceError("lot_not_active")
+            return {**item, "id": item_id}
 
     async def test_visibility(self, item_id):
         proxy = self.managed("market")

@@ -22,7 +22,7 @@ from aiogram.types import (
 )
 
 from . import __version__
-from .account_ui import AccountUI, ConnectionForm
+from .account_ui import AccountUI, ConnectionForm, lot_error_text
 from .analytics import Analytics
 from .checks import binding_fingerprint, connection_snapshot, needs_kosell, preview_delivery
 from .engine import Engine
@@ -458,7 +458,9 @@ class TelegramUI(AccountUI, ExternalUI, SellerUI):
             return await self.cancel(message, state)
         if (await state.get_state() or "").startswith("ConnectionForm:") and not data.startswith("connect:"):
             await self.expire_logins(message.chat.id)
-        await state.set_state(None)
+        # Visibility confirmation verifies both the active form and its nonce.
+        if data != "connect:visibility:run" and not data.startswith("connect:visibility:run:"):
+            await state.set_state(None)
         try:
             if data == "connect:status":
                 return await self.status(message)
@@ -981,7 +983,7 @@ class TelegramUI(AccountUI, ExternalUI, SellerUI):
         await state.clear()
         await state.set_state(Form.binding)
         await state.update_data(step=0, binding={})
-        await message.answer("Пришлите UUID готового лота Playerok. Ссылка не подходит.")
+        await message.answer("Пришлите ссылку на свой товар Playerok или его полный ID.")
 
     async def binding_input(self, message, state):
         data = await state.get_data()
@@ -990,7 +992,7 @@ class TelegramUI(AccountUI, ExternalUI, SellerUI):
         text = (message.text or "").strip()
         try:
             if step == 0:
-                b["item_id"] = str(uuid.UUID(text))
+                b["item_id"] = (await self.resolve_own_lot(text))["id"]
                 if self.db.one("SELECT item_id FROM bindings WHERE item_id=?", (b["item_id"],)):
                     return await message.answer("Лот уже привязан. Его настройки доступны в списке лотов.")
                 prompt = "Выберите тип выдачи кнопкой: аренда, склад, Telegram Stars или SMM."
@@ -1074,6 +1076,8 @@ class TelegramUI(AccountUI, ExternalUI, SellerUI):
                 )
             else:
                 await message.answer(prompt)
+        except ServiceError as error:
+            await message.answer(lot_error_text(error))
         except (ValueError, ArithmeticError):
             await message.answer("Не удалось принять значение. Проверьте формат и попробуйте снова.")
 

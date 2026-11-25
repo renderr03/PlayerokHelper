@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/renderr03/PlayerokHelper/releases/tag/v0.5.4"><img src="https://img.shields.io/badge/Версия-0.5.4-39CDA4" alt="Версия 0.5.4"></a>
+  <a href="https://github.com/renderr03/PlayerokHelper/releases/tag/v0.5.5"><img src="https://img.shields.io/badge/Версия-0.5.5-39CDA4" alt="Версия 0.5.5"></a>
   <a href="https://github.com/renderr03/PlayerokHelper/actions/workflows/tests.yml"><img src="https://github.com/renderr03/PlayerokHelper/actions/workflows/tests.yml/badge.svg" alt="Проверки проекта"></a>
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&amp;logoColor=white" alt="Python 3.11 и новее">
   <img src="https://img.shields.io/badge/Размещение-свой_сервер-39CDA4" alt="Размещение на своём сервере">
@@ -32,6 +32,10 @@
 - **Всё в Telegram.** Настройки, заказы, сообщения покупателям и отчёты в одной панели.
 - **Ваш сервер и ваши настройки.** Токен бота и ключ шифрования хранятся в локальном `.env`; подключения из панели и складские данные — в зашифрованной базе.
 - **Установка одной командой.** Консоль спросит токен и ID администратора, затем настроит запуск в фоне и после перезагрузки.
+
+## 0.5.5: обычные ссылки на товары
+
+При проверке скрытия и привязке лотов можно отправлять обычную ссылку, скопированную через «Поделиться» на Playerok. Бот получает полный ID товара через API, проверяет владельца и показывает подтверждение. Полный UUID по-прежнему поддерживается. Неверная ссылка теперь получает отдельное сообщение об ошибке вместо повторения исходного приглашения. [Отчёт](docs/releases/v0.5.5.md).
 
 ## 0.5.4: подключение через curl_cffi
 
