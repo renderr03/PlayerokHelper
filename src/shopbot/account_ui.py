@@ -859,7 +859,10 @@ class AccountUI:
     async def automatic_recovery(self):
         """Recover a pre-upgrade test, without blocking connections or hiding again."""
         pending = self.db.get("visibility_test_pending")
-        if not pending:
+        if not pending or self.db.get("paused"):
+            return
+        binding = self.db.one("SELECT paused FROM bindings WHERE item_id=?", (pending["item_id"],))
+        if binding and binding["paused"]:
             return
         state = self.db.get("visibility_recovery", {})
         if state.get("item_id") != pending["item_id"]:

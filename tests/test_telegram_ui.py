@@ -989,3 +989,19 @@ async def test_uncertain_legacy_hide_is_settled_automatically_after_separate_fre
         await ui.automatic_recovery()
         assert bool(ui.db.get("visibility_test_pending")) == (attempt < 2)
     assert not ui.engine.market.current.transitions
+
+
+@pytest.mark.parametrize("pause", ["store", "lot"])
+async def test_automatic_legacy_recovery_respects_manual_pause(panel, pause):
+    from conftest import binding
+
+    ui, _, _ = panel
+    market = ui.engine.market
+    market.items["old-lot"] = {"status": "PAUSED", "user": {"id": "seller"}}
+    ui.db.set("visibility_test_pending", {"item_id": "old-lot", "account_id": "seller"})
+    if pause == "store":
+        ui.db.set("paused", True)
+    else:
+        binding(ui.db, module="stock", item_id="old-lot", paused=1)
+    await ui.automatic_recovery()
+    assert not market.transitions and ui.db.get("visibility_test_pending")
