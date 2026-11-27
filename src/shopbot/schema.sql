@@ -122,3 +122,14 @@ CREATE TABLE IF NOT EXISTS provider_actions (
 
 
 CREATE INDEX IF NOT EXISTS outbox_remote ON outbox(channel,target,remote_id);
+
+CREATE TABLE IF NOT EXISTS shop_templates (id TEXT PRIMARY KEY,name TEXT NOT NULL,payload TEXT NOT NULL,created_at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS customer_notes (buyer_id TEXT PRIMARY KEY,tag TEXT NOT NULL DEFAULT '',note TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS automation_rules (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL,phrase TEXT NOT NULL,
+ condition TEXT NOT NULL CHECK(condition IN ('any','paid','delivered','no_order','problem')),
+ period TEXT NOT NULL CHECK(period IN ('any','working','outside')),
+ action TEXT NOT NULL CHECK(action IN ('reply','instruction','operator')),reply TEXT NOT NULL,
+ priority INTEGER NOT NULL DEFAULT 0,delay INTEGER NOT NULL DEFAULT 0,cooldown INTEGER NOT NULL DEFAULT 60,enabled INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS kosell_charges (order_id TEXT PRIMARY KEY,currency TEXT NOT NULL,amount TEXT NOT NULL,rub_rate TEXT,estimated INTEGER NOT NULL DEFAULT 0);

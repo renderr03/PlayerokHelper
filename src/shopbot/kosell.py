@@ -100,5 +100,7 @@ class KOSell:
             "POST", "/api/v1/rental/calculate-extend-price", {"rental_uid": uid, "hours": hours}, read=True
         )
 
-    async def extend(self, uid: str, hours: int):
-        return await self.request("POST", f"/api/v1/rental/{uid}/extend", {"hours": hours, "currency": "RUB"})
+    async def extend(self, uid: str, hours: int, currency="RUB"):
+        return await self.request(
+            "POST", f"/api/v1/rental/{uid}/extend", {"hours": hours, "currency": currency}
+        )

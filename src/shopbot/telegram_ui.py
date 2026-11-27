@@ -38,7 +38,9 @@ from .presentation import price as card_price
 from .presentation import safe as safe_html
 from .rentals import Rentals
 from .seller_ui import MODE_NAMES, SellerUI
+from .shop_ui import ShopForm, ShopUI
 from .updates import Updates, read_json, release_summary
+from .wallets import balance_text
 
 LABELS = {
     "greeting": "👋 Приветствие",
@@ -90,7 +92,7 @@ class AdminOnly(BaseMiddleware):
         return await handler(event, data)
 
 
-class TelegramUI(AccountUI, ExternalUI, SellerUI):
+class TelegramUI(ShopUI, AccountUI, ExternalUI, SellerUI):
     def __init__(self, bot: Bot, engine: Engine, admins, data_dir, project_dir=None):
         self.bot, self.engine, self.db = bot, engine, engine.db
         self.data_dir = data_dir
@@ -133,6 +135,8 @@ class TelegramUI(AccountUI, ExternalUI, SellerUI):
                 ConnectionForm.visibility,
             ),
         )
+        r.message.register(self.shop_input, StateFilter(ShopForm.value))
+        r.message.register(self.shop_upload, StateFilter(ShopForm.upload))
         r.message.register(self.value, StateFilter(Form.value))
         r.message.register(self.binding_input, StateFilter(Form.binding))
         r.message.register(self.stock_input, StateFilter(Form.stock))
@@ -174,8 +178,8 @@ class TelegramUI(AccountUI, ExternalUI, SellerUI):
                     [("⭐ Автонастройки", "menu:auto"), ("⚡ Плагины", "menu:plugins")],
                     [("📈 Аналитика", "menu:analytics"), ("🎁 Бонусные товары", "s:loyalty")],
                     [("👤 Профиль", "menu:profile"), ("📍 Управление", "menu:account")],
-                    [("⚙️ Настроить магазин", "setup:home"), ("⬆️ Обновления", "updates:home")],
-                    [("📞 Помощь", "menu:help")],
+                    [("🧰 Инструменты магазина", "v6:home"), ("⚙️ Настроить магазин", "setup:home")],
+                    [("⬆️ Обновления", "updates:home"), ("📞 Помощь", "menu:help")],
                 ]
             ),
         )
@@ -240,7 +244,7 @@ class TelegramUI(AccountUI, ExternalUI, SellerUI):
             + ("✅ " + profile.get("username", "подключён") if playerok_ok else "не подключён"),
             "🎮 KOSell: "
             + (
-                "✅ " + money(rub((self.db.get("kosell_balance") or {})["balance_rub"]))
+                "✅ " + balance_text(self.db.get("kosell_balance") or {})
                 if kosell.get("ok")
                 else "временно нет связи"
                 if kosell.get("configured")
@@ -270,6 +274,8 @@ class TelegramUI(AccountUI, ExternalUI, SellerUI):
             rows.append(("➕ Добавить Playerok", "connect:playerok"))
         if not kosell.get("configured"):
             rows.append(("🎮 Подключить KOSell", "connect:key:kosell"))
+        else:
+            rows.append(("💱 Кошельки KOSell · " + self.db.get("kosell_currency", "RUB"), "v6:wallet"))
         rows += [
             ("📦 Настроить лот", "bind:new"),
             ("🛍 Мои лоты", "bindings:all"),
@@ -444,6 +450,8 @@ class TelegramUI(AccountUI, ExternalUI, SellerUI):
             # Navigating away invalidates a reply preview before another chat can
             # become the target of a delayed click from the previous screen.
             await state.update_data(reply_nonce=None, reply_text=None)
+        if not data.startswith(("v6:tplapply:", "v6:rulesave:")):
+            await state.update_data(shop_confirm=None)
         if data == "ui:cancel":
             return await self.cancel(message, state)
         if data == "ui:back":
@@ -470,6 +478,8 @@ class TelegramUI(AccountUI, ExternalUI, SellerUI):
         if data != "connect:visibility:run" and not data.startswith("connect:visibility:run:"):
             await state.set_state(None)
         try:
+            if await self.shop_callback(message, data, state):
+                return
             if data == "connect:status":
                 return await self.status(message)
             if await self.connection_callback(message, data, state):
@@ -574,6 +584,7 @@ class TelegramUI(AccountUI, ExternalUI, SellerUI):
                     self.analytics.text(),
                     reply_markup=keyboard(
                         [
+                            ("📊 Графики и сравнение", "v6:stats:7"),
                             ("📊 Выгрузить Excel", "report:all"),
                             ("📦 Товары", "analytics:items"),
                             ("🗓 Фильтр периода", "edit:report_filter"),
@@ -954,6 +965,8 @@ class TelegramUI(AccountUI, ExternalUI, SellerUI):
         rows = [
             ("💰 Порог маржи", f"s:margin:{rid}"),
             ("🧪 Проверить сценарий", f"preview:lot:{item_id}"),
+            ("📋 Сохранить шаблон", f"v6:tplsave:{rid}"),
+            ("💰 Рассчитать цену", f"v6:price:{rid}"),
             ("▶ Снять ручную паузу" if b["paused"] else "⏸ Ручная пауза", f"lotflag:paused:{item_id}"),
             ("Автовыставление: " + str(bool(b["auto_restore"])), f"lotflag:auto_restore:{item_id}"),
             ("Автоподнятие: " + str(bool(b["auto_bump"])), f"lotflag:auto_bump:{item_id}"),
@@ -999,7 +1012,7 @@ class TelegramUI(AccountUI, ExternalUI, SellerUI):
         await state.clear()
         await state.set_state(Form.binding)
         await state.update_data(step=0, binding={})
-        await message.answer("Пришлите ссылку на свой товар Playerok или его полный ID.")
+        await self.shop_lots(message, state, refresh=True)
 
     async def binding_input(self, message, state):
         data = await state.get_data()
@@ -1035,8 +1048,12 @@ class TelegramUI(AccountUI, ExternalUI, SellerUI):
                     b.update(product_id=None, max_cost=0)
                     next_step = 4
                     prompt = "Длительность аренды / продления в часах."
+                elif b["module"] == "stock":
+                    b.update(product_id=None, hours=1, max_cost=0)
+                    next_step = 6
+                    prompt = "Инструкция покупателю (до 1000 символов), либо - без инструкции."
                 else:
-                    prompt = "ID игры KOSell (целое число). Для своего склада: 0."
+                    prompt = "Выберите игру KOSell кнопкой из каталога. Если каталог временно недоступен, можно ввести её ID."
             elif step == 3:
                 product = int(text)
                 if product < 0 or (b["module"] != "stock" and product == 0):
@@ -1081,6 +1098,15 @@ class TelegramUI(AccountUI, ExternalUI, SellerUI):
                 await state.clear()
                 return await self.lot(message, b["item_id"])
             await state.update_data(step=next_step, binding=b)
+            if step == 1 and data.get("catalog_title"):
+                return await self.binding_input(
+                    message.model_copy(update={"text": data["catalog_title"]}).as_(self.bot), state
+                )
+            if step == 2 and b["module"] in {"kosell", "extend"} and not b.get("fulfillment"):
+                try:
+                    return await self.kosell_choices(message, state)
+                except (ServiceError, TimeoutError, AttributeError):
+                    pass
             if step == 0:
                 from .seller_ui import MODE_NAMES, buttons
 
@@ -1091,7 +1117,17 @@ class TelegramUI(AccountUI, ExternalUI, SellerUI):
                     ),
                 )
             else:
-                await message.answer(prompt)
+                choices = []
+                if step == 3:
+                    limits = data.get("product_limits", {})
+                    lo, hi = limits.get("min_hours") or 1, limits.get("max_hours") or 8760
+                    choices = [
+                        (str(h) + " ч.", f"v6:hours:{h}") for h in sorted({lo, 24, 72, 168}) if lo <= h <= hi
+                    ]
+                await message.answer(
+                    prompt,
+                    reply_markup=keyboard(choices + [("‹ Назад", "ui:back"), ("✖ Отменить", "ui:cancel")]),
+                )
         except ServiceError as error:
             await message.answer(lot_error_text(error))
         except (ValueError, ArithmeticError):

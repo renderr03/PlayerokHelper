@@ -8,6 +8,7 @@ import json
 from dataclasses import dataclass, field
 
 from .models import ServiceError, money, now, rub, timestamp
+from .wallets import affordable, balance_text, wallet
 
 CONNECTION_TIMEOUT = 15
 
@@ -52,6 +53,7 @@ async def connection_snapshot(db, market, kosell, *, check_kosell=True):
                     raise ServiceError("playerok_account_changed")
                 result["profile"] = {k: value[k] for k in ("id", "username", "balance")}
             else:
+                balance_text(value)
                 if rub(value["balance_rub"]) < 0:
                     raise ValueError()
                 result["kosell_balance"] = {
@@ -242,16 +244,17 @@ async def preview_delivery(engine, item_id, *, rental_id=None):
                     cost = rub(quote["total_rub"])
                     if cost < 0:
                         raise ValueError()
-                    balance = rub(snapshot["kosell_balance"]["balance_rub"])
+                    balance = snapshot["kosell_balance"]
                     result.observations += [
                         "Расчёт KOSell: " + money(cost),
-                        "Баланс: " + money(balance),
+                        "Кошельки: " + balance_text(balance),
+                        "Оплата: " + wallet(db),
                         "Лимит закупки: " + money(binding["max_cost"]),
                     ]
                     if cost > binding["max_cost"]:
                         result.issues.append("Стоимость выше лимита закупки.")
-                    if balance < cost:
-                        result.issues.append("Недостаточно средств KOSell.")
+                    if not affordable(balance, quote, wallet(db)):
+                        result.issues.append("Недостаточно средств KOSell в выбранном кошельке.")
         result.sample = "Заказ [номер заказа]\n" + payload
         if binding["instruction"]:
             result.sample += "\n\n" + binding["instruction"]

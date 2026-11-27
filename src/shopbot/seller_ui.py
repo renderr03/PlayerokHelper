@@ -43,7 +43,18 @@ class SellerUI:
     async def workspace(self, message, state=None, *, page=0, view="new"):
         if state:
             await state.set_state(None)
+
+        def tagged(tag):
+            return (
+                "EXISTS(SELECT 1 FROM orders o JOIN customer_notes n ON n.buyer_id=o.buyer_id WHERE o.chat_id=c.id AND n.tag='"
+                + tag
+                + "')"
+            )
+
         where = {
+            "regular": tagged("regular"),
+            "help": tagged("help"),
+            "manual": tagged("manual"),
             "new": "EXISTS(SELECT 1 FROM chat_messages m WHERE m.chat_id=c.id AND m.needs_reply=1 AND m.created_at>c.panel_seen_at)",
             "waiting": "EXISTS(SELECT 1 FROM chat_messages m WHERE m.chat_id=c.id AND m.needs_reply=1 AND m.created_at>c.last_seller_at)",
             "problem": "EXISTS(SELECT 1 FROM orders o WHERE o.chat_id=c.id AND (o.problem=1 OR o.stage IN ('failed','review')))",
@@ -62,6 +73,9 @@ class SellerUI:
             ("Ждут ответа", "s:inbox:waiting:0"),
             ("Проблемные заказы", "s:inbox:problem:0"),
             ("Все чаты", "s:inbox:all:0"),
+            ("Постоянные", "s:inbox:regular:0"),
+            ("Нужна помощь", "s:inbox:help:0"),
+            ("Ручной ответ", "s:inbox:manual:0"),
         ]
         for row in rows:
             buyer = self.db.one(
@@ -97,13 +111,18 @@ class SellerUI:
         orders = self.db.all(
             "SELECT * FROM orders WHERE chat_id=? ORDER BY created_at DESC LIMIT 5", (chat["id"],)
         )
+        customer_order = self.db.one(
+            "SELECT rowid rid FROM orders WHERE chat_id=? ORDER BY created_at DESC LIMIT 1", (chat["id"],)
+        )
         lines = ["<b>💬 Переписка с покупателем</b>", "Последние сообщения:", ""]
         for row in reversed(history):
             lines.append(
                 ("<b>👤 Покупатель:</b> " if row["sender"] == "buyer" else "<b>🛍 Продавец:</b> ")
                 + safe(self.db.decrypt(row["ciphertext"]), 220)
             )
-        keys = [("✍ Ответить", "s:reply:" + str(rid)), ("⚡ Быстрый ответ", "s:quick:choose:" + str(rid))]
+        keys = (
+            [("👤 Покупатель", "v6:customer:" + str(customer_order["rid"]))] if customer_order else []
+        ) + [("✍ Ответить", "s:reply:" + str(rid)), ("⚡ Быстрый ответ", "s:quick:choose:" + str(rid))]
         keys += [(r["stage"] + " · " + r["title"][:25], "order:" + r["id"]) for r in orders]
         keys += [("‹ Чаты", "s:inbox:all:0")]
         lines += ["", link("Открыть чат на Playerok", "chats/" + quote(chat["id"], safe=""))]

@@ -239,6 +239,15 @@ class Playerok:
                 raise ServiceError("playerok_pagination_loop")
             seen.add(cursor)
 
+    async def own_items(self):
+        await self.profile()
+        async for rows in self.pages(
+            "items", {"filter": {"userId": self.user_id}, "showForbiddenImage": False}, "items"
+        ):
+            for row in rows:
+                if (row.get("user") or {}).get("id") == self.user_id:
+                    yield row
+
     async def recent_deal_ids(self, statuses=None):
         # Always paginate: a reconnect must not lose the 25th paid order.
         async for rows in self.pages(

@@ -96,8 +96,20 @@ class Analytics:
             if purchase["cost_known"] and purchase["currency"]:
                 unit = purchase["currency"]
                 native[unit] = native.get(unit, Decimal(0)) + Decimal(purchase["native_amount"])
+        estimated_currency = any(
+            self.db.one("SELECT order_id FROM kosell_charges WHERE order_id=? AND estimated=1", (r["id"],))
+            for r in rows
+        )
+        kosell_native = {}
+        for r in rows:
+            debit = self.db.one("SELECT currency,amount FROM kosell_charges WHERE order_id=?", (r["id"],))
+            if debit:
+                kosell_native[debit["currency"]] = kosell_native.get(debit["currency"], Decimal(0)) + Decimal(
+                    debit["amount"]
+                )
         complete = (
-            unknown == 0
+            not estimated_currency
+            and unknown == 0
             and commission is not None
             and reserved == 0
             and bonus_unknown == 0
@@ -117,6 +129,8 @@ class Analytics:
             "bonus_uncertain": bonus_uncertain,
             "reserved": reserved,
             "external_pending": external_pending,
+            "kosell_native": ", ".join(f"{v} {k}" for k, v in sorted(kosell_native.items())) or "—",
+            "kosell_estimated": estimated_currency,
             "external_native": ", ".join(f"{v} {k}" for k, v in sorted(native.items())) or "—",
             "unknown_costs": unknown,
             "profit": gross - costs - promotion - bonus_cost - (commission or 0),
@@ -132,7 +146,9 @@ class Analytics:
             f"📦 Известная себестоимость: {money(s['cost'])}\nКомиссия: {money(s['commission'])}\n"
             f"Продвижение: {money(s['promotion'])}, резерв: {money(s['reserved'])}\n"
             f"Бонусы: {money(s['bonus_cost'])}; неизвестная стоимость: {s['bonus_unknown']}; спорных отправок: {s['bonus_uncertain']}\n"
-            f"Внешние закупки: {s['external_native']}; в процессе / на сверке: {s['external_pending']}\n"
+            f"KOSell: {s['kosell_native']}. "
+            + ("Рублёвый эквивалент USD оценочный.\n" if s["kosell_estimated"] else "\n")
+            + f"Внешние закупки: {s['external_native']}; в процессе / на сверке: {s['external_pending']}\n"
             f"\n{'✅ Прибыль' if s['complete'] else '🟡 Предварительный результат'}: {money(s['profit'])}\n"
             f"Себестоимость неизвестна у заказов: {s['unknown_costs']}\n"
             + (

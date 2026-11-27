@@ -18,7 +18,36 @@ class ExternalUI:
 
         await state.set_state(Form.value)
         await state.update_data(edit="x:" + key, **context)
-        await message.answer(prompt)
+        choices = []
+        if (
+            key == "new_quantity"
+            and (context.get("external_wizard") or (await state.get_data()).get("external_wizard", {})).get(
+                "mode"
+            )
+            == "stars"
+        ):
+            choices = [(str(q) + " ⭐", f"v6:pack:{q}") for q in (50, 100, 250, 500, 1000)]
+        if key == "new_quantity":
+            wizard = context.get("external_wizard") or (await state.get_data()).get("external_wizard", {})
+            if wizard.get("mode") == "smm":
+                service = next(
+                    (
+                        r
+                        for r in self.db.get("provider_catalog:" + str(wizard.get("provider_id")), [])
+                        if r["id"] == wizard.get("service_id")
+                    ),
+                    None,
+                )
+                if service:
+                    choices = [
+                        (str(q), f"v6:quantity:{q}")
+                        for q in sorted({service["min"], 100, 500, 1000, service["max"]})
+                        if service["min"] <= q <= service["max"] and q <= 1000000
+                    ]
+                    prompt += f"\nДопустимо: {service['min']}–{service['max']}."
+        await message.answer(
+            prompt, reply_markup=buttons(choices + [("‹ Назад", "ui:back"), ("✖ Отменить", "ui:cancel")])
+        )
 
     async def external_home(self, message, mode):
         kind = "split" if mode == "stars" else "smm"

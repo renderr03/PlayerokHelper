@@ -9,6 +9,7 @@ from .checks import recovery_item
 from .engine import Engine
 from .margins import record
 from .models import ServiceError, money, now, rub
+from .wallets import number, wallet
 
 
 class Listings:
@@ -65,8 +66,15 @@ class Listings:
             cost = rub(product["price_per_hour_rub"]) * binding["hours"]
         if cost > binding["max_cost"]:
             return "purchase_limit_exceeded"
-        if balance < cost:
-            return "insufficient_rub_balance"
+        currency = wallet(self.db)
+        native_cost = cost
+        if currency == "USD":
+            if binding["module"] == "kosell":
+                native_cost = number(quotes[(binding["product_id"], binding["hours"])]["total_usd"])
+            else:
+                native_cost = number(product["price_per_hour_usd"]) * binding["hours"]
+        if balance < native_cost:
+            return "insufficient_" + currency.lower() + "_balance"
         return None
 
     async def tick(self, *, snapshot=None):
@@ -78,10 +86,21 @@ class Listings:
                 try:
                     products = {p["id"]: p for p in await self.engine.kosell.products()}
                     if snapshot is None:
-                        balance = rub((await self.engine.kosell.balance())["balance_rub"])
+                        wallets = await self.engine.kosell.balance()
+                        balance = (
+                            number(wallets["balance_usd"])
+                            if wallet(self.db) == "USD"
+                            else rub(wallets["balance_rub"])
+                        )
                     elif snapshot.get("services", {}).get("kosell", {}).get("ok"):
-                        balance = rub(snapshot["kosell_balance"]["balance_rub"])
-                except ServiceError:
+                        wallets = snapshot["kosell_balance"]
+                        balance = (
+                            number(wallets["balance_usd"])
+                            if wallet(self.db) == "USD"
+                            else rub(wallets["balance_rub"])
+                        )
+                except (ServiceError, KeyError, ValueError, TypeError, ArithmeticError):
+                    balance = None
                     self.db.notify(
                         "KOSell недоступен: скрываем связанные лоты.", f"kosell_outage:{int(now() // 3600)}"
                     )
@@ -90,7 +109,7 @@ class Listings:
                     continue
                 try:
                     reason = await self.availability(binding, products, balance, quotes)
-                except ServiceError:
+                except (ServiceError, KeyError, ValueError, TypeError, ArithmeticError):
                     reason = "quote_unavailable"
                 item_id = binding["item_id"]
                 try:

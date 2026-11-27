@@ -6,6 +6,7 @@ from datetime import datetime
 from .engine import Engine
 from .loyalty import Loyalty
 from .models import Message, ServiceError, now
+from .scenarios import execute as run_scenario
 
 
 class Conversations:
@@ -100,6 +101,23 @@ class Conversations:
         )
         item_id = order["item_id"] if order else None
         text = message.text.strip()
+        customer = self.db.one("SELECT tag FROM customer_notes WHERE buyer_id=?", (message.user_id,))
+        if customer and customer["tag"] == "manual":
+            self.db.notify(
+                json.dumps(
+                    {
+                        "chat_id": message.chat_id,
+                        "buyer_id": message.user_id,
+                        "buyer_name": message.user_name,
+                        "text": text[:1200],
+                    },
+                    ensure_ascii=False,
+                ),
+                "incoming:" + message.id,
+                purpose="card:message",
+            )
+            self.done(message)
+            return
         external_reply = await self.engine.external.message(message)
         if external_reply is not None:
             self.reply(message, external_reply, "external")
@@ -122,7 +140,11 @@ class Conversations:
             "incoming:" + message.id,
             purpose="card:message",
         )
-        if chat["operator_paused"]:
+        customer = self.db.one("SELECT tag FROM customer_notes WHERE buyer_id=?", (message.user_id,))
+        if chat["operator_paused"] or (customer and customer["tag"] == "manual"):
+            self.done(message)
+            return
+        if run_scenario(self.engine, message, order):
             self.done(message)
             return
         if self.db.feature("greeting", item_id) and now() - chat["greeted_at"] >= 86400:

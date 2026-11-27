@@ -18,10 +18,11 @@ from .connections import EmailLogin, ManagedClient, session_input
 from .external import save_provider
 from .item_reference import item_reference
 from .kosell import KOSell
-from .models import ServiceError, money, now, rub
+from .models import ServiceError, now, rub
 from .navigation import buttons
 from .playerok import Playerok
 from .providers import PRESETS
+from .wallets import balance_text
 
 CHECK_TIMEOUT = 15
 
@@ -403,12 +404,13 @@ class AccountUI:
                     if preset == "kosell":
                         balance = self.db.get("kosell_balance") or {}
                         await message.answer(
-                            "✅ KOSell подключён\n\n💰 Баланс: "
-                            + money(rub(balance["balance_rub"]))
+                            "✅ KOSell подключён\n\n💰 Кошельки:\n"
+                            + balance_text(balance)
                             + "\n\nПроверка выполнена автоматически. Выберите лот и товар для выдачи.",
                             reply_markup=buttons(
                                 [
                                     ("📦 Настроить первый лот", "bind:new"),
+                                    ("💱 Выбрать кошелёк", "v6:wallet"),
                                     ("⚙️ Мой магазин", "setup:home"),
                                     ("🏠 Главное меню", "menu:home"),
                                 ]
@@ -606,6 +608,7 @@ class AccountUI:
                 try:
                     async with asyncio.timeout(CHECK_TIMEOUT):
                         balance = await client.balance()
+                    balance_text(balance)
                     if rub(balance["balance_rub"]) < 0:
                         raise ServiceError("kosell_invalid_balance")
                     if self.kosell_in_use():
@@ -663,7 +666,7 @@ class AccountUI:
             if amount < 0:
                 raise ValueError()
             result.update(ok=True, reason="ok")
-            text = "✅ KOSell подключён\n\n💰 Баланс: " + money(amount)
+            text = "✅ KOSell подключён\n\n💰 Кошельки:\n" + balance_text(balance)
         except TimeoutError:
             result["reason"] = "timeout"
             text = "⏱ KOSell не ответил за 15 секунд. Попробуйте позже. Сохранённый ключ не изменён."

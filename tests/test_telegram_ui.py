@@ -259,7 +259,7 @@ async def test_updates_menu_confirmation_cancel_and_auth(panel, monkeypatch):
     (folder / "enabled.json").write_text('{"protocol": 1}')
     ui.db.set(
         "update_release",
-        {"tag": "v0.6.0", "sha": "b" * 40, "url": "", "body": "## Изменения\n- **Чаты:** `/inbox`."},
+        {"tag": "v9.9.9", "sha": "b" * 40, "url": "", "body": "## Изменения\n- **Чаты:** `/inbox`."},
     )
     await send("/version")
     assert "• Чаты: /inbox." in session.calls[-1].text
@@ -316,12 +316,11 @@ async def test_button_cancel_validation_and_wizard_back(panel):
     await send(callback="s:bindtype:stock")
     assert "Название лота" in session.calls[-1].text
     await send("First title")
-    assert "ID игры" in session.calls[-1].text
+    assert "Инструкция покупателю" in session.calls[-1].text
     await send(callback="ui:back")
     assert "Название лота" in session.calls[-1].text
     await send("Corrected title")
-    for value in ["0", "1", "0", "-"]:
-        await send(value)
+    await send("-")
     assert ui.db.one("SELECT title FROM bindings")["title"] == "Corrected title"
     await send(callback="text:greeting")
     await send(callback="ui:cancel")

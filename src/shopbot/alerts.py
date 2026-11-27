@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .models import ServiceError, rub
+from .wallets import number, wallet
 
 
 class Alerts:
@@ -85,7 +86,11 @@ class Alerts:
                     quotes[key] = await self.engine.kosell.quote(*key)
                 if quotes[key] is None:
                     continue
-                cost = rub(quotes[key]["total_rub"])
+                cost = (
+                    number(quotes[key]["total_usd"])
+                    if wallet(self.db) == "USD"
+                    else rub(quotes[key]["total_rub"])
+                )
                 if cost <= 0:
                     continue
                 count = balance // cost

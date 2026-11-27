@@ -12,6 +12,7 @@ from .external import MODES, External
 from .loyalty import Loyalty
 from .models import Deal, ServiceError, money, now, rub, timestamp
 from .rentals import Rentals
+from .wallets import affordable, charge, number, rate, wallet
 
 TERMINAL = {"delivered", "historical", "ignored", "cancelled", "failed", "review"}
 CONFIRMED = {"CONFIRMED", "CONFIRMED_AUTOMATICALLY"}
@@ -313,16 +314,18 @@ class Engine:
         cost = rub(quote["total_rub"])
         self.check_cost(cost, binding)
         balance = await self.kosell.balance()
-        if rub(balance["balance_rub"]) < cost:
-            raise ServiceError("insufficient_rub_balance")
+        currency = wallet(self.db)
+        if not affordable(balance, quote, currency):
+            raise ServiceError("insufficient_" + currency.lower() + "_balance")
         request = {
             "body": {
                 "product_id": binding["product_id"],
                 "duration_hours": binding["hours"],
-                "currency": "RUB",
+                "currency": currency,
                 "verify_before_issue": True,
             },
             "quoted_cost": cost,
+            "rub_rate": str(rate(quote)) if currency == "USD" else None,
         }
         self.update(
             row["id"],
@@ -340,14 +343,33 @@ class Engine:
         request = json.loads(row["request_json"])
         async with self._purchase_lock:
             result = await self.kosell.rent(request["body"], row["idem_key"])
-        # Persist provider identifiers before credentials or messaging.
-        cost = rub(result["price_rub"]) if result.get("price_rub") is not None else None
+        # Keep a returned provider ID even when financial/expiry fields need
+        # review. No credentials are requested and no new key is generated.
+        self.update(row["id"], rental_uid=result["rental_uid"], rental_number=result.get("rental_number"))
+        try:
+            if result.get("product_id") not in {None, request["body"]["product_id"]}:
+                raise ValueError()
+            expiry = timestamp(result["expires_at"])
+            cost = rub(result["price_rub"]) if result.get("price_rub") is not None else None
+            if request["body"].get("currency") == "USD":
+                number(result["price_paid"])
+        except (ValueError, KeyError, TypeError, ArithmeticError):
+            self.fail(row["id"], "kosell_result_requires_review", review=True)
+            return
         with self.db.transaction():
+            currency = request["body"].get("currency", "RUB")
+            if result.get("currency_used") not in {None, currency}:
+                self.fail(row["id"], "kosell_wallet_mismatch", review=True)
+                return
+            if currency == "USD":
+                cost = charge(self.db, row["id"], currency, result["price_paid"], request.get("rub_rate"))
+            elif cost is not None:
+                charge(self.db, row["id"], currency, result["price_rub"])
             self.update(
                 row["id"],
                 rental_uid=result["rental_uid"],
                 rental_number=result.get("rental_number"),
-                expires_at=timestamp(result["expires_at"]),
+                expires_at=expiry,
                 cost=cost,
                 stage="preparing",
                 error=None,
@@ -420,24 +442,32 @@ class Engine:
             quote = await self.kosell.extension_quote(target["rental_uid"], binding["hours"])
             cost = rub(quote["total_rub"])
             self.check_cost(cost, binding)
-            if rub((await self.kosell.balance())["balance_rub"]) < cost:
-                raise ServiceError("insufficient_rub_balance")
+            currency = wallet(self.db)
+            if not affordable(await self.kosell.balance(), quote, currency):
+                raise ServiceError("insufficient_" + currency.lower() + "_balance")
             # A crash after this commit always requires manual reconciliation.
             request = {
                 "uid": target["rental_uid"],
                 "hours": binding["hours"],
-                "currency": "RUB",
+                "currency": currency,
+                "rub_rate": str(rate(quote)) if currency == "USD" else None,
                 "previous_expiry": target["expires_at"],
                 "quoted_cost": cost,
             }
             self.update(row["id"], stage="extending", request_json=json.dumps(request))
             try:
-                result = await self.kosell.extend(target["rental_uid"], binding["hours"])
-                if not result.get("success") or result.get("currency") != "RUB":
+                result = (
+                    await self.kosell.extend(target["rental_uid"], binding["hours"], currency="USD")
+                    if currency == "USD"
+                    else await self.kosell.extend(target["rental_uid"], binding["hours"])
+                )
+                if not result.get("success") or result.get("currency") != currency:
                     self.fail(row["id"], "extension_result_requires_review", review=True)
                     return
                 expiry = timestamp(result["new_expires_at"])
-                actual_cost = rub(result["price_paid"])
+                actual_cost = charge(
+                    self.db, row["id"], currency, result["price_paid"], request.get("rub_rate")
+                )
             except ServiceError as exc:
                 self.fail(row["id"], exc.code, review=exc.ambiguous)
                 return
