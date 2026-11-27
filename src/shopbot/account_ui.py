@@ -13,6 +13,7 @@ from aiogram.types import InlineKeyboardButton
 
 from . import __version__
 from .access import probe_access, probe_text
+from .checks import connected_service, connection_snapshot, needs_kosell, save_connections
 from .connections import EmailLogin, ManagedClient, session_input
 from .external import save_provider
 from .item_reference import item_reference
@@ -116,11 +117,20 @@ class AccountUI:
     async def connection_menu(self, message, state):
         await state.clear()
         await self.expire_logins(message.chat.id)
+        snapshot = await self.refresh_connections()
         profile = self.db.get("profile") or {}
         name = profile.get("username") or "не добавлен"
+        supplier = snapshot["services"].get("kosell", {})
+        supplier_status = (
+            "✅ подключён"
+            if supplier.get("ok")
+            else "нет связи"
+            if supplier.get("configured")
+            else "не добавлен"
+        )
         await message.answer(
-            f"🔌 Подключения магазина\n\n🎮 Playerok: {name}\n\n"
-            "Добавьте нужного поставщика. Для своего склада поставщик не нужен.",
+            f"🔌 Подключения магазина\n\n🎮 Playerok: {name}\n🎮 KOSell: {supplier_status}\n\n"
+            "Доступ проверяется автоматически. Для своего склада поставщик не нужен.",
             reply_markup=buttons(
                 [
                     (
@@ -130,7 +140,7 @@ class AccountUI:
                     ("🎮 Подключить KOSell", "connect:key:kosell"),
                     ("⭐ Подключить Split", "connect:key:split"),
                     ("Подключить SMM-панель", "connect:smm"),
-                    ("🎮 Проверить KOSell", "connect:check:kosell"),
+                    ("⚙️ Настроить товары", "setup:home"),
                     ("‹ Главное меню", "menu:home"),
                 ]
             ),
@@ -147,6 +157,12 @@ class AccountUI:
         elif data == "connect:check:kosell":
             await self.check_kosell(message)
         elif data == "connect:visibility:recover":
+            if not self.db.get("visibility_test_pending"):
+                await message.answer(
+                    "✅ Незавершённых тестов нет. Подключения проверяются автоматически.",
+                    reply_markup=self.visibility_controls(),
+                )
+                return True
             await message.answer("⏳ Проверяю восстановление лота…")
             try:
                 async with self.managed("market").exclusive() as market:
@@ -260,46 +276,19 @@ class AccountUI:
                 "Не отправляйте пароль или seed-фразу. Сообщение с ключом будет удалено по возможности.",
                 reply_markup=controls(),
             )
-        elif data == "connect:visibility":
+        elif (
+            data == "connect:visibility"
+            or data == "connect:visibility:run"
+            or data.startswith("connect:visibility:run:")
+        ):
             await state.clear()
-            if self.db.get("visibility_test_pending"):
-                await message.answer(self.visibility_failure_text(), reply_markup=self.visibility_controls())
-                return True
-            await state.set_state(ConnectionForm.visibility)
             await message.answer(
-                "Пришлите обычную ссылку на свой активный тестовый товар Playerok. "
-                "Скопируйте её через «Поделиться». Полный ID товара тоже подходит. "
-                "На следующем шаге бот попросит подтверждение краткого скрытия и восстановления.",
-                reply_markup=controls("setup:home"),
+                "✨ Тест скрытия больше не нужен\n\nДоступ проверяется автоматически при подключении. "
+                "Настройка не снимает товары с продажи.",
+                reply_markup=buttons(
+                    [("⚙️ Настроить товары", "setup:home"), ("🏠 Главное меню", "menu:home")]
+                ),
             )
-        elif data == "connect:visibility:run" or data.startswith("connect:visibility:run:"):
-            context = await state.get_data()
-            form = await state.get_state()
-            item_id, expires = context.get("visibility_item"), context.get("visibility_expires", 0)
-            nonce = context.get("visibility_nonce")
-            await state.clear()
-            if (
-                form != ConnectionForm.visibility.state
-                or not item_id
-                or expires < now()
-                or not nonce
-                or data != "connect:visibility:run:" + nonce
-            ):
-                await message.answer(
-                    "Подтверждение устарело. Выберите тестовый лот снова.",
-                    reply_markup=buttons(
-                        [("Выбрать лот", "connect:visibility"), ("‹ Настройка", "setup:home")]
-                    ),
-                )
-            else:
-                await message.answer("Проверяю скрытие и восстановление лота…")
-                try:
-                    await self.test_visibility(item_id)
-                    text = "✅ Лот восстановлен. Проверка пройдена.\n\nМожно продолжить настройку магазина."
-                except (ServiceError, TimeoutError, ValueError, KeyError, TypeError) as error:
-                    self.record_visibility_error(error)
-                    text = self.visibility_failure_text()
-                await message.answer(text, reply_markup=self.visibility_controls())
         return True
 
     async def connection_input(self, message, state):
@@ -411,46 +400,36 @@ class AccountUI:
                     else:
                         save_provider(self.db, preset, text)
                     await state.clear()
-                    await message.answer(
-                        "Ключ сохранён. Теперь проверьте подключение.",
-                        reply_markup=buttons(
-                            [
-                                (
-                                    "Проверить подключение",
-                                    "connect:check:kosell"
-                                    if preset == "kosell"
-                                    else "x:provider:"
-                                    + str(
-                                        self.db.one("SELECT id FROM providers WHERE preset=?", (preset,))[
-                                            "id"
-                                        ]
-                                    ),
-                                ),
-                                ("‹ Подключения", "connect:home"),
-                            ]
-                        ),
-                    )
+                    if preset == "kosell":
+                        balance = self.db.get("kosell_balance") or {}
+                        await message.answer(
+                            "✅ KOSell подключён\n\n💰 Баланс: "
+                            + money(rub(balance["balance_rub"]))
+                            + "\n\nПроверка выполнена автоматически. Выберите лот и товар для выдачи.",
+                            reply_markup=buttons(
+                                [
+                                    ("📦 Настроить первый лот", "bind:new"),
+                                    ("⚙️ Мой магазин", "setup:home"),
+                                    ("🏠 Главное меню", "menu:home"),
+                                ]
+                            ),
+                        )
+                    else:
+                        provider_id = self.db.one("SELECT id FROM providers WHERE preset=?", (preset,))["id"]
+                        await message.answer(
+                            "Ключ сохранён. Выберите товар и настройте поставщика.",
+                            reply_markup=buttons(
+                                [
+                                    ("⚙️ Настроить поставщика", "x:provider:" + str(provider_id)),
+                                    ("‹ Подключения", "connect:home"),
+                                ]
+                            ),
+                        )
                 elif form == ConnectionForm.visibility.state:
-                    await state.update_data(visibility_item=None, visibility_expires=0, visibility_nonce=None)
-                    item_reference(text)  # Reject invalid input before any request.
-                    await message.answer("Нахожу товар по ссылке и проверяю владельца…")
-                    item = await self.resolve_own_lot(text, active=True)
-                    item_id = item["id"]
-                    nonce = uuid.uuid4().hex[:12]
-                    await state.update_data(
-                        visibility_item=item_id, visibility_expires=now() + 120, visibility_nonce=nonce
-                    )
+                    await state.clear()
                     await message.answer(
-                        "Товар найден: " + str(item.get("name") or "активный лот")[:200] + "\n\n"
-                        "Лот будет ненадолго скрыт и восстановлен. "
-                        "Используйте свой тестовый лот без активной сделки. Продолжить?",
-                        reply_markup=buttons(
-                            [
-                                ("Проверить лот", "connect:visibility:run:" + nonce),
-                                ("Другой лот", "connect:visibility"),
-                                ("Отменить", "ui:cancel"),
-                            ]
-                        ),
+                        "Тест скрытия больше не нужен. Подключение проверяется автоматически.",
+                        reply_markup=buttons([("⚙️ Настроить товары", "setup:home")]),
                     )
             except ServiceError as exc:
                 if form == ConnectionForm.visibility.state:
@@ -491,7 +470,7 @@ class AccountUI:
                 await message.answer(error_text, reply_markup=markup)
             except TimeoutError:
                 await message.answer(
-                    "⏱ Поставщик не ответил вовремя. Ключ не сохранён. Попробуйте позже.",
+                    "⏱ Сервис не ответил вовремя. Подключение не сохранено. Попробуйте позже.",
                     reply_markup=controls(),
                 )
             except (ValueError, KeyError, TypeError, ArithmeticError) as exc:
@@ -523,12 +502,35 @@ class AccountUI:
 
     async def connected(self, message):
         profile = self.db.get("profile") or {}
+        has_kosell = bool(self.db.get("kosell_token") or getattr(self.engine.kosell, "configured", False))
+        rows = []
+        if not has_kosell:
+            rows += [
+                ("🎮 Подключить KOSell", "connect:key:kosell"),
+                ("📦 Использовать свой склад", "setup:source:stock"),
+            ]
+        else:
+            rows.append(("📦 Настроить товары", "setup:home"))
+        rows.append(("🏠 Главное меню", "menu:home"))
         await message.answer(
-            "✅ Аккаунт Playerok подключён\n\n👤 "
+            "✅ Playerok подключён\n\n👤 "
             + str(profile.get("username") or profile["id"])
-            + "\n\nМожно продолжить настройку магазина.",
-            reply_markup=buttons([("Продолжить настройку", "setup:home"), ("В главное меню", "menu:home")]),
+            + "\n\nДоступ подтверждён автоматически. "
+            + ("Настройте товары для выдачи." if has_kosell else "Добавьте KOSell или выберите свой склад."),
+            reply_markup=buttons(rows),
         )
+
+    async def refresh_connections(self):
+        snapshot = self.db.get("connection_snapshot")
+        if not isinstance(snapshot, dict) or now() - snapshot.get("at", 0) >= 60:
+            snapshot = await connection_snapshot(
+                self.db,
+                self.engine.market,
+                self.engine.kosell,
+                check_kosell=needs_kosell(self.db) or bool(self.db.get("kosell_token")),
+            )
+            save_connections(self.db, snapshot)
+        return snapshot
 
     def managed(self, name):
         client = getattr(self.engine, name)
@@ -543,7 +545,8 @@ class AccountUI:
         )
         saved = False
         try:
-            profile = await candidate.profile()
+            async with asyncio.timeout(CHECK_TIMEOUT):
+                profile = await candidate.profile()
             if not profile.get("id") or not profile.get("username") or rub(profile["balance"]["value"]) < 0:
                 raise ServiceError("playerok_invalid_profile")
             proxy = self.managed("market")
@@ -562,7 +565,7 @@ class AccountUI:
                     self.db.set("profile", {k: profile[k] for k in ("id", "username", "balance")})
                     self.db.set("last_profile", now())
                     self.db.set("last_readiness", 0)
-                    self.db.set("live_enabled", False)
+                    connected_service(self.db, "playerok", profile)
                     if old_id != profile["id"]:
                         self.db.set("visibility_proof", None)
                     self.db.audit("playerok_connected", str(profile["id"]))
@@ -609,6 +612,10 @@ class AccountUI:
                         raise ValueError("unsettled_orders")
                     with self.db.transaction():
                         self.db.set("kosell_token", self.db.encrypt(token))
+                        connected_service(self.db, "kosell", balance)
+                        self.db.set("kosell_last_check", {"ok": True, "at": now(), "reason": "ok"})
+                        if not self.db.get("setup_source"):
+                            self.db.set("setup_source", "kosell")
                         self.db.set("last_readiness", 0)
                         self.db.audit("kosell_credentials_changed", "")
                     proxy.replace(client)
@@ -723,7 +730,8 @@ class AccountUI:
         if self.db.get("visibility_test_pending"):
             return (
                 "⚠️ Восстановление лота не подтверждено\n\n"
-                "Автоматизация отключена. Откройте лот в Playerok и восстановите продажу, "
+                "Этот лот временно исключён из автоматизации. Остальные лоты продолжают работать. "
+                "Откройте лот в Playerok и восстановите продажу, "
                 "если он скрыт. Затем нажмите «Проверить восстановление». "
                 "Эта кнопка не снимает лот с продажи повторно."
             )
@@ -798,7 +806,6 @@ class AccountUI:
         pending = self.db.get("visibility_test_pending")
         if not pending:
             return
-        self.db.set("live_enabled", False)
         await market.profile()
         if market.user_id != pending["account_id"] or not market.visibility:
             raise ServiceError("visibility_wrong_account")
@@ -839,11 +846,66 @@ class AccountUI:
 
     async def recover_visibility(self):
         if self.db.get("visibility_test_pending"):
-            self.db.set("live_enabled", False)
             try:
-                async with self.managed("market").exclusive() as market:
+                proxy = self.managed("market")
+                async with proxy.request():
+                    market = proxy.current
                     async with asyncio.timeout(30):
                         await self.restore_visibility(market)
             except (ServiceError, TimeoutError, ValueError, KeyError, TypeError) as error:
                 self.record_visibility_error(error)
                 raise
+
+    async def automatic_recovery(self):
+        """Recover a pre-upgrade test, without blocking connections or hiding again."""
+        pending = self.db.get("visibility_test_pending")
+        if not pending:
+            return
+        state = self.db.get("visibility_recovery", {})
+        if state.get("item_id") != pending["item_id"]:
+            state = {"item_id": pending["item_id"], "attempts": 0, "approved": 0}
+        if now() < state.get("next_at", 0):
+            return
+        state["attempts"] += 1
+        try:
+            proxy = self.managed("market")
+            async with proxy.request():
+                market = proxy.current
+                async with asyncio.timeout(30):
+                    # An uncertain hide is only settled after fresh APPROVED
+                    # readings across three background cycles. Never hide again.
+                    if pending.get("phase") == "hide_requested":
+                        await market.profile()
+                        item = await self.visibility_item(market, pending["item_id"])
+                        if (
+                            market.user_id != pending["account_id"]
+                            or (item.get("user") or {}).get("id") != market.user_id
+                        ):
+                            raise ServiceError("visibility_wrong_account")
+                        state["approved"] = state["approved"] + 1 if item["status"] == "APPROVED" else 0
+                        if state["approved"] in {1, 2}:
+                            return
+                    # Retry only a definite rejection, at most three automatic
+                    # attempts. Lost mutation replies are never replayed.
+                    retry = pending.get("phase") == "restore_rejected" and state["attempts"] <= 3
+                    if pending.get("phase") == "hide_requested" and state["approved"] >= 3:
+                        retry = True
+                    await self.restore_visibility(market, retry=retry)
+            self.db.notify(
+                "✅ Тестовый лот снова в продаже. Дополнительные проверки не нужны.",
+                "legacy-recovery:" + pending["item_id"] + ":done",
+            )
+            self.db.set("last_readiness", 0)
+        except (ServiceError, TimeoutError, ValueError, KeyError, TypeError) as error:
+            self.record_visibility_error(error)
+            if state["attempts"] >= 3:
+                self.db.notify(
+                    "⚠️ Не удалось вернуть прежний тестовый лот в продажу. "
+                    "Восстановите его в Playerok. Этот лот временно исключён из автоматизации; "
+                    "остальные лоты продолжают работать.",
+                    "legacy-recovery:" + pending["item_id"] + ":blocked",
+                    purpose="legacy_recovery",
+                )
+        finally:
+            state["next_at"] = now() + min(300, 30 * state["attempts"])
+            self.db.set("visibility_recovery", state)

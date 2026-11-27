@@ -13,7 +13,7 @@ from aiogram.types import ErrorEvent
 from . import __version__
 from .alerts import Alerts
 from .analytics import Analytics
-from .checks import connection_snapshot, needs_kosell
+from .checks import connection_snapshot, needs_kosell, save_connections
 from .config import Config
 from .connections import ManagedClient
 from .conversations import Conversations
@@ -30,6 +30,19 @@ from .rentals import Rentals
 from .telegram_ui import TelegramUI, dispatcher
 from .updater_worker import write
 from .updates import Updates, read_json
+
+TASK_LABELS = {
+    "orders": "Новые заказы",
+    "chats": "Сообщения покупателей",
+    "listings": "Управление лотами",
+    "jobs": "Отложенные действия",
+    "delivery": "Отправка уведомлений",
+    "providers": "Заказы поставщиков",
+    "local": "Отчёты и обслуживание",
+    "versions": "Поиск обновлений",
+    "connections": "Связь с магазином",
+    "recovery": "Восстановление лота",
+}
 
 
 class UnconfiguredPlayerok:
@@ -61,19 +74,8 @@ def market_from_config(config, db=None):
 
 async def readiness(db: Database, market, kosell, *, needs_kosell=True) -> tuple[bool, list[str]]:
     snapshot = await connection_snapshot(db, market, kosell, check_kosell=needs_kosell)
-    if "profile" in snapshot:
-        db.set("profile", snapshot["profile"])
-        db.set("last_profile", now())
-    if "kosell_balance" in snapshot:
-        db.set("kosell_balance", snapshot["kosell_balance"])
-    db.set("connection_snapshot", snapshot)
-    issues = snapshot["issues"]
-    db.set("readiness_status", "готово" if not issues else ", ".join(issues))
-    market_ready = snapshot["services"]["playerok"]["ok"] and not any(
-        i.startswith("visibility_") for i in issues
-    )
-    db.set("live_enabled", market_ready)
-    return not issues, issues
+    save_connections(db, snapshot)
+    return not snapshot["issues"], snapshot["issues"]
 
 
 class Runtime:
@@ -169,13 +171,16 @@ class Runtime:
 
     async def connections(self):
         await self.ui.expire_logins()
-        await self.ui.recover_visibility()
         await readiness(self.db, self.engine.market, self.engine.kosell, needs_kosell=needs_kosell(self.db))
         snapshot = self.db.get("connection_snapshot")
         Alerts(self.engine).connections(snapshot["services"])
         if not self.db.get("live_enabled"):
             await Alerts(self.engine).availability(self.db.all("SELECT * FROM bindings"), None, None, {})
         self.db.set("last_readiness", now())
+
+    async def recovery_cycle(self):
+        # Legacy test recovery is independent of authentication and other lots.
+        await self.ui.automatic_recovery()
 
     async def orders_cycle(self):
         if self.db.get("live_enabled") and not self.db.get("paused"):
@@ -228,9 +233,19 @@ class Runtime:
         while True:
             delay = interval
             try:
-                if self.guard():
-                    await operation()
+                if not self.guard():
+                    await asyncio.sleep(interval)
+                    continue
+                await operation()
                 failures = 0
+                self.db.set("worker_health:" + name, {"ok": True, "at": now()})
+                Alerts(self.engine).observe(
+                    "worker:" + name,
+                    False,
+                    "",
+                    "✅ " + TASK_LABELS.get(name, "Магазин") + ": работа восстановлена.",
+                    successes=2,
+                )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -239,15 +254,22 @@ class Runtime:
                 if isinstance(exc, ServiceError):
                     delay = max(delay, min(3600, exc.retry_after))
                 logging.getLogger("shopbot").error("Worker %s failed: %s", name, type(exc).__name__)
-                self.db.notify(
-                    "Фоновая задача " + name + ": временная ошибка. Откройте статус магазина в меню бота.",
-                    f"worker:{name}:{int(now() // 3600)}",
+                self.db.set("worker_health:" + name, {"ok": False, "at": now(), "failures": failures})
+                Alerts(self.engine).observe(
+                    "worker:" + name,
+                    True,
+                    "⚠️ " + TASK_LABELS.get(name, "Магазин") + ": временно недоступно. "
+                    "Бот повторит попытку автоматически. Подробности — в состоянии магазина.",
+                    "✅ " + TASK_LABELS.get(name, "Магазин") + ": работа восстановлена.",
+                    failures=3,
+                    successes=2,
                 )
             await asyncio.sleep(delay)
 
     async def loop(self):
         jobs = [
             ("connections", self.connections, 60),
+            ("recovery", self.recovery_cycle, 30),
             ("orders", self.orders_cycle, self.config.poll_seconds),
             ("chats", self.chats_cycle, self.config.poll_seconds),
             ("listings", self.listing_cycle, 60),

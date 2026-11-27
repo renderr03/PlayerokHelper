@@ -75,7 +75,7 @@ async def test_preview_is_read_only_for_all_modules(app, monkeypatch, module):
         ("duration", "вне диапазона"),
         ("owner", "не принадлежит"),
         ("status", "активном статусе"),
-        ("proof", "visibility_roundtrip"),
+        ("pending", "ожидает восстановления"),
         ("outage", "Нет актуальных данных"),
         ("malformed", "формат ответа"),
     ],
@@ -99,8 +99,8 @@ async def test_preview_reports_blocks_without_side_effects(app, monkeypatch, cha
         market.items["item1"]["user"] = {"id": "another-store"}
     elif change == "status":
         market.items["item1"]["status"] = "PAUSED"
-    elif change == "proof":
-        db.set("visibility_proof", None)
+    elif change == "pending":
+        db.set("visibility_test_pending", {"item_id": "item1", "account_id": "seller"})
     elif change == "outage":
         kosell.quote = AsyncMock(side_effect=ServiceError("kosell_network"))
     elif change == "malformed":
@@ -287,3 +287,132 @@ def test_existing_database_preserves_settings_and_stock(tmp_path):
         assert db.decrypt(db.one("SELECT ciphertext FROM stock")["ciphertext"]) == "old-secret"
     finally:
         db.close()
+
+
+async def test_tokens_only_readiness_requires_no_test_or_mutations(app, monkeypatch):
+    engine, db, market, kosell = app
+    db.set("visibility_proof", None)
+    forbid_mutations(monkeypatch, engine, db, market, kosell)
+    ok, issues = await readiness(db, market, kosell)
+    assert ok and not issues and db.get("live_enabled")
+    assert db.get("visibility_proof") is None
+    assert db.get("profile")["id"] == "seller"
+    assert db.get("kosell_balance")["balance_rub"] == 1000
+    assert not market.transitions and not kosell.rents
+
+
+async def test_connection_timeout_is_reported_and_other_service_is_still_checked(app, monkeypatch):
+    import asyncio
+
+    import shopbot.checks as checks
+
+    _, db, market, kosell = app
+    monkeypatch.setattr(checks, "CONNECTION_TIMEOUT", 0.01)
+
+    async def stalled():
+        await asyncio.Event().wait()
+
+    market.profile = stalled
+    snapshot = await connection_snapshot(db, market, kosell)
+    assert snapshot["issues"] == ["playerok_timeout"]
+    assert snapshot["services"]["kosell"]["ok"]
+    assert not snapshot["services"]["playerok"]["ok"]
+
+
+async def test_pending_test_only_blocks_new_orders_of_that_listing(app):
+    engine, db, market, _ = app
+    binding(db, module="stock", item_id="blocked")
+    binding(db, module="stock", item_id="healthy")
+    db.add_stock("blocked", ["blocked-secret"])
+    db.add_stock("healthy", ["healthy-secret"])
+    db.set("visibility_test_pending", {"item_id": "blocked", "account_id": "seller"})
+    order(engine, market, order_id="blocked-order", item_id="blocked")
+    order(engine, market, order_id="healthy-order", item_id="healthy")
+    await readiness(db, market, engine.kosell, needs_kosell=False)
+    await engine.process("blocked-order")
+    await engine.process("healthy-order")
+    assert db.get("live_enabled")
+    assert engine.order("blocked-order")["stage"] == "new"
+    assert engine.order("healthy-order")["stage"] == "sending"
+    assert db.one("SELECT state FROM stock WHERE item_id='blocked'")["state"] == "free"
+
+
+async def test_pending_test_does_not_change_listing_or_hide_healthy_other_lot(app):
+    engine, db, market, _ = app
+    binding(db, module="stock", item_id="blocked")
+    binding(db, module="stock", item_id="healthy")
+    db.add_stock("healthy", ["secret"])
+    db.set("visibility_test_pending", {"item_id": "blocked", "account_id": "seller"})
+    await Listings(engine).tick()
+    assert not market.transitions
+    assert "blocked" not in market.items
+
+
+def test_supplier_validation_does_not_revalidate_stale_playerok_session(app):
+    from shopbot.checks import connected_service
+
+    _, db, _, _ = app
+    db.set(
+        "connection_snapshot",
+        {
+            "at": now() - 3600,
+            "services": {"playerok": {"ok": True, "configured": True}},
+            "issues": [],
+            "profile": {"id": "seller", "username": "old", "balance": {"value": 100}},
+        },
+    )
+    connected_service(db, "kosell", {"balance_rub": 100})
+    assert not db.get("live_enabled")
+    assert not db.get("connection_snapshot")["services"]["playerok"]["ok"]
+
+
+async def test_background_errors_are_debounced_and_never_show_internal_names(app, tmp_path, monkeypatch):
+    import asyncio
+
+    engine, db, _, _ = app
+    db.set("admins", [42])
+    runtime = Runtime(SimpleNamespace(data_dir=tmp_path), db, engine, SimpleNamespace())
+    calls = 0
+    sleeps = 0
+
+    async def operation():
+        nonlocal calls
+        calls += 1
+        if calls <= 3:
+            raise ServiceError("private-exception-details")
+
+    async def advance(delay):
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps == 1:
+            assert not notifications(db)
+        if sleeps >= 5:
+            raise asyncio.CancelledError()
+
+    monkeypatch.setattr("shopbot.runtime.asyncio.sleep", advance)
+    with pytest.raises(asyncio.CancelledError):
+        await runtime.scheduled("connections", operation, 1)
+    messages = notifications(db)
+    assert len(messages) == 2
+    assert all("connections" not in m and "private" not in m for m in messages)
+    assert "повторит попытку автоматически" in messages[0]
+    assert "восстановлена" in messages[1]
+    assert db.get("worker_health:connections")["ok"]
+
+
+@pytest.mark.parametrize("configured", [True, False])
+async def test_supplier_outage_waits_without_failing_paid_order_or_blocking_stock(app, configured):
+    engine, db, market, kosell = app
+    kosell.configured = configured
+    binding(db, module="kosell", item_id="rental")
+    binding(db, module="stock", item_id="stock")
+    db.add_stock("stock", ["secret"])
+    order(engine, market, order_id="rental-order", item_id="rental")
+    order(engine, market, order_id="stock-order", item_id="stock")
+    db.set("connection_snapshot", {"services": {"kosell": {"configured": configured, "ok": False}}})
+    await engine.process("rental-order")
+    await engine.process("stock-order")
+    assert engine.order("rental-order")["stage"] == "new"
+    assert engine.order("stock-order")["stage"] == "sending"
+    assert not kosell.rents
+    assert db.get("live_enabled")

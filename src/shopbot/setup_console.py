@@ -156,7 +156,7 @@ def configure(directory: Path, terminal: Console, *, connections=False):
         "Настройки сохранены в .env (доступ только владельцу). Ключ шифрования сохранён.\n"
         "Ручной запуск без systemd-службы: bash start.sh\n"
         "Подключить KOSell и Playerok: .venv/bin/playerokhelper setup --connections\n"
-        "Перед автоматизацией выполните doctor и проверку скрытия тестового лота по README."
+        "Подключения можно добавить кнопками в Telegram: профиль и баланс проверяются автоматически. Тест скрытия не требуется."
     )
 
 

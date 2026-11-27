@@ -112,11 +112,12 @@ async def test_ambiguous_paid_action_keeps_budget_and_blocks_repetition(app):
     assert db.one("SELECT state FROM listing_actions")["state"] == "uncertain"
 
 
-async def test_doctor_requires_live_proof_tied_to_contract_and_account(app):
+async def test_readiness_does_not_require_live_test_but_still_rejects_account_change(app):
     e, db, market, kosell = app
     ready, issues = await readiness(db, market, kosell)
-    assert not ready and not db.get("live_enabled")
-    db.set("visibility_proof", {"account_id": market.user_id, "fingerprint": market.fingerprint()})
+    assert ready and db.get("live_enabled")
+    assert db.get("visibility_proof") is None
+    db.set("visibility_proof", {"account_id": "irrelevant", "fingerprint": "old-contract"})
     ready, issues = await readiness(db, market, kosell)
     assert ready and db.get("live_enabled")
     market.user_id = "different-account"

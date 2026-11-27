@@ -160,28 +160,19 @@ async def test_setup_wizard_stock_preview_and_auth(panel):
 
     ui, session, send = panel
     ui.db.set("live_enabled", False)
-    ui.db.set(
-        "visibility_proof",
-        {
-            "account_id": ui.engine.market.user_id,
-            "fingerprint": ui.engine.market.fingerprint(),
-        },
-    )
     await send("/setup", user=999)
     assert not session.calls
     await send(callback="setup:source:kosell", user=999)
     assert ui.db.get("setup_source") is None
     await send("/setup")
-    assert "Мастер первого запуска" in session.calls[-1].text
-    assert "setup --connections" not in session.calls[-1].text
-    assert "connect:home" in {
-        b.callback_data for row in session.calls[-1].reply_markup.inline_keyboard for b in row
-    }
-    assert "stop playerokhelper" not in session.calls[-1].text
-    assert not ui.db.get("live_enabled")  # diagnostic UI cannot enable live actions
+    assert "Ваш магазин" in session.calls[-1].text
+    assert "connect:visibility" not in callbacks(session.calls[-1])
+    assert "connect:check:kosell" not in callbacks(session.calls[-1])
+    assert ui.db.get("live_enabled")
+    assert not ui.engine.market.transitions
     await send(callback="setup:source:stock")
     assert ui.db.get("setup_source") == "stock"
-    assert "✅ 2. Источник: свой склад" in session.calls[-1].text
+    assert "Источник: свой склад" in session.calls[-1].text
     binding(ui.db, module="stock")
     ui.db.add_stock("item1", ["login:do-not-show-this-password"])
     await send(callback="preview:lot:item1", user=999)
@@ -190,12 +181,10 @@ async def test_setup_wizard_stock_preview_and_auth(panel):
     assert "проверки пройдены" in session.calls[-1].text
     assert "do-not-show-this-password" not in session.calls[-1].text
     assert ui.db.one("SELECT state FROM stock")["state"] == "free"
-    assert not ui.db.get("live_enabled")
+    ui.db.set("last_preview", None)
     await send("/setup")
-    assert "✅ 5." in session.calls[-1].text
-    ui.db.execute("UPDATE bindings SET instruction='changed'")
-    await send("/setup")
-    assert "⬜ 5." in session.calls[-1].text
+    assert "Настроено лотов: 1" in session.calls[-1].text
+    assert ui.db.get("live_enabled") and not ui.engine.market.transitions
 
 
 async def test_alert_settings_validation_cancel_and_toggle(panel):
@@ -377,7 +366,7 @@ async def test_private_token_connection_is_encrypted_and_live_without_restart(pa
         m.text for m in session.calls if isinstance(m, (SendMessage, EditMessageText))
     )
     assert any(isinstance(m, DeleteMessage) for m in session.calls)
-    assert ui.db.get("live_enabled") is False
+    assert ui.db.get("live_enabled") is True
     await ui.engine.market.close()
 
 
@@ -444,29 +433,16 @@ async def test_email_flow_cancel_cooldown_attempt_limit_and_no_secret_echo(panel
     await ui.engine.market.close()
 
 
-async def test_visibility_button_confirm_restore_and_recovery(panel):
+async def test_old_visibility_buttons_cannot_hide_and_legacy_recovery_still_works(panel):
     from shopbot.models import ServiceError
 
     ui, session, send = panel
     market = ui.engine.market
     item_id = "02d57c00-d5bd-4f31-8a31-ab3b2fb2af13"
     await send(callback="connect:visibility")
-    await send("https://playerok.com/products/" + item_id + "-test")
-    assert not market.transitions
-    confirm = next(
-        b.callback_data
-        for row in session.calls[-1].reply_markup.inline_keyboard
-        for b in row
-        if b.callback_data.startswith("connect:visibility:run:")
-    )
-    await send(callback=confirm, user=999)
-    assert not market.transitions
-    await send(callback=confirm)
-    assert market.transitions == [(item_id, False), (item_id, True)]
-    assert ui.db.get("visibility_proof")["item_id"] == item_id
-    assert not ui.db.get("visibility_test_pending")
-    await send(callback=confirm)
-    assert len(market.transitions) == 2  # confirmation is single use
+    assert "Тест скрытия больше не нужен" in session.calls[-1].text
+    await send(callback="connect:visibility:run:old-nonce")
+    assert not market.transitions and not ui.db.get("visibility_proof")
     original = market.set_visible
 
     async def lost_hide(item, visible):
@@ -594,7 +570,7 @@ async def test_supplier_swap_rechecks_intents_after_balance_await(panel):
     assert candidate.closed and not ui.db.get("kosell_token")
 
 
-async def test_failed_restore_remains_persisted_and_disables_readiness(panel):
+async def test_failed_legacy_restore_does_not_disable_whole_store(panel):
     from shopbot.models import ServiceError
     from shopbot.runtime import readiness
 
@@ -612,7 +588,7 @@ async def test_failed_restore_remains_persisted_and_disables_readiness(panel):
         await ui.test_visibility("test-lot")
     assert ui.db.get("visibility_test_pending") and not ui.db.get("visibility_proof")
     await readiness(ui.db, ui.engine.market, ui.engine.kosell, needs_kosell=False)
-    assert not ui.db.get("live_enabled")
+    assert ui.db.get("live_enabled")
     market.set_visible = original
     with pytest.raises(ServiceError):
         await ui.recover_visibility()  # no automatic repeat of a rejected write
@@ -646,7 +622,7 @@ async def test_token_connection_succeeds_after_realistic_playerok_cache_500(pane
     )
     await send(callback="connect:token")
     await send("correct-private-token")
-    assert "Аккаунт Playerok подключён" in session.calls[-1].text
+    assert "Playerok подключён" in session.calls[-1].text
     assert [r.method for r in requests] == ["GET", "POST"]
     assert ui.db.get("playerok_session")
     assert "correct-private-token" not in "".join(
@@ -725,34 +701,17 @@ async def test_kosell_check_timeout_finishes_and_keeps_key(panel, monkeypatch):
     assert "private-key" not in session.calls[-1].text
 
 
-async def test_visibility_result_not_replaced_by_setup_and_recovery_button(panel):
-    from shopbot.models import ServiceError
-
+async def test_legacy_recovery_result_remains_in_same_panel(panel):
     ui, session, send = panel
     market = ui.engine.market
-    original = market.set_visible
-
-    async def reject_restore(item, visible):
-        if visible:
-            raise ServiceError("playerok_visibility_http_403")
-        return await original(item, visible)
-
-    market.set_visible = reject_restore
-    await send(callback="connect:visibility")
-    await send("02d57c00-d5bd-4f31-8a31-ab3b2fb2af13")
-    confirm = next(v for v in callbacks(session.calls[-1]) if v.startswith("connect:visibility:run:"))
-    await send(callback=confirm)
-    assert "Восстановление лота не подтверждено" in session.calls[-1].text
-    assert "connect:visibility:recover" in callbacks(session.calls[-1])
-    assert ui.db.get("visibility_test_pending")["phase"] == "restore_rejected"
-    assert not ui.db.get("live_enabled")
-    market.set_visible = original
+    item_id = "02d57c00-d5bd-4f31-8a31-ab3b2fb2af13"
+    market.items[item_id] = {"status": "PAUSED", "user": {"id": "seller"}}
+    ui.db.set(
+        "visibility_test_pending", {"item_id": item_id, "account_id": "seller", "phase": "restore_rejected"}
+    )
     await send(callback="connect:visibility:recover")
     assert "снова в продаже" in session.calls[-1].text
-    assert market.transitions == [
-        ("02d57c00-d5bd-4f31-8a31-ab3b2fb2af13", False),
-        ("02d57c00-d5bd-4f31-8a31-ab3b2fb2af13", True),
-    ]
+    assert market.transitions == [(item_id, True)]
     assert not ui.db.get("visibility_test_pending")
 
 
@@ -852,7 +811,7 @@ async def test_visibility_recovery_does_not_republish_unsafe_listing(panel, stat
     assert ui.db.get("visibility_test_pending")
 
 
-async def test_saved_kosell_key_check_button_queries_candidate_without_lots(panel):
+async def test_saved_kosell_key_checks_automatically_and_shows_balance(panel):
     ui, session, send = panel
     calls = []
 
@@ -869,35 +828,164 @@ async def test_saved_kosell_key_check_button_queries_candidate_without_lots(pane
     ui.kosell_factory = lambda *args: Candidate()
     await send(callback="connect:key:kosell")
     await send("supplier-private-api-key")
-    assert "connect:check:kosell" in callbacks(session.calls[-1])
+    assert "connect:check:kosell" not in callbacks(session.calls[-1])
+    assert "bind:new" in callbacks(session.calls[-1])
     assert calls == ["balance"]
-    await send(callback="connect:check:kosell")
-    assert calls == ["balance", "balance"]
+    await send(callback="setup:home")
+    assert calls == ["balance"]
     assert "700.00" in session.calls[-1].text
-    assert not ui.db.get("setup_source")
+    assert ui.db.get("setup_source") == "kosell"
 
 
-async def test_visibility_result_delivery_failure_does_not_interrupt_restore(panel):
+async def test_legacy_recovery_delivery_failure_does_not_interrupt_restore(panel):
     from aiogram.exceptions import TelegramNetworkError
 
     ui, session, send = panel
-    await send(callback="connect:visibility")
-    await send("02d57c00-d5bd-4f31-8a31-ab3b2fb2af13")
-    confirm = next(v for v in callbacks(session.calls[-1]) if v.startswith("connect:visibility:run:"))
+    item_id = "02d57c00-d5bd-4f31-8a31-ab3b2fb2af13"
+    market = ui.engine.market
+    market.items[item_id] = {"status": "PAUSED", "user": {"id": "seller"}}
+    ui.db.set("visibility_test_pending", {"item_id": item_id, "account_id": "seller"})
     original = session.make_request
 
     async def fail_result(bot, method, timeout=None):
-        if isinstance(method, (SendMessage, EditMessageText)) and "Лот восстановлен." in method.text:
+        if isinstance(method, (SendMessage, EditMessageText)) and "снова в продаже" in method.text:
             raise TelegramNetworkError(method=method, message="lost result")
         return await original(bot, method, timeout=timeout)
 
     session.make_request = fail_result
     with pytest.raises(TelegramNetworkError):
-        await send(callback=confirm)
+        await send(callback="connect:visibility:recover")
     assert not ui.db.get("visibility_test_pending")
-    assert ui.db.get("visibility_proof")
-    market = ui.engine.market.current
-    assert market.transitions == [
-        ("02d57c00-d5bd-4f31-8a31-ab3b2fb2af13", False),
-        ("02d57c00-d5bd-4f31-8a31-ab3b2fb2af13", True),
-    ]
+    assert market.transitions == [(item_id, True)]
+
+
+async def test_two_token_onboarding_is_automatic_and_never_hides_a_lot(panel):
+    from conftest import FakeMarket
+
+    ui, session, send = panel
+    reads = []
+
+    class Market(FakeMarket):
+        def __init__(self, *args):
+            super().__init__()
+
+        async def profile(self):
+            reads.append("profile")
+            return await super().profile()
+
+        async def close(self):
+            pass
+
+    class Supplier:
+        configured = True
+
+        async def balance(self):
+            reads.append("balance")
+            return {"balance_rub": "999.50", "balance_usd": "10"}
+
+        async def close(self):
+            pass
+
+    ui.playerok_factory = Market
+    ui.kosell_factory = lambda *args: Supplier()
+    await send(callback="connect:token")
+    await send("private-playerok-key")
+    assert "connect:key:kosell" in callbacks(session.calls[-1])
+    assert ui.db.get("live_enabled")
+    await send(callback="connect:key:kosell")
+    await send("private-kosell-key")
+    assert reads == ["profile", "balance"]
+    assert "999.50" in session.calls[-1].text
+    assert "connect:check:kosell" not in callbacks(session.calls[-1])
+    await send(callback="setup:home")
+    assert reads == ["profile", "balance"]
+    assert "connect:visibility" not in callbacks(session.calls[-1])
+    assert ui.db.get("live_enabled") and not ui.db.get("visibility_proof")
+    assert not ui.engine.market.current.transitions
+    assert not ui.db.all("SELECT * FROM expenses")
+    assert not ui.db.all("SELECT * FROM orders")
+
+
+async def test_slow_legacy_recovery_does_not_block_connections(panel, tmp_path):
+    from types import SimpleNamespace
+
+    from shopbot.runtime import Runtime
+
+    ui, _, _ = panel
+    market = ui.engine.market
+    started, release = asyncio.Event(), asyncio.Event()
+    original = market.item
+
+    async def slow_item(item):
+        started.set()
+        await release.wait()
+        return await original(item)
+
+    market.visibility_item = slow_item
+    ui.db.set("visibility_test_pending", {"item_id": "old-lot", "account_id": "seller"})
+    task = asyncio.create_task(ui.automatic_recovery())
+    await asyncio.wait_for(started.wait(), 1)
+    runtime = Runtime(SimpleNamespace(data_dir=tmp_path), ui.db, ui.engine, ui)
+    try:
+        await asyncio.wait_for(runtime.connections(), 1)
+        assert ui.db.get("live_enabled")
+    finally:
+        release.set()
+        await task
+    assert not ui.db.get("visibility_test_pending")
+
+
+async def test_automatic_legacy_recovery_retries_definite_rejections_but_not_lost_writes(panel):
+    from shopbot.models import ServiceError
+
+    ui, _, _ = panel
+    ui.db.set("admins", [42])
+    market = ui.engine.market
+    market.items["old-lot"] = {"status": "PAUSED", "user": {"id": "seller"}}
+    ui.db.set(
+        "visibility_test_pending", {"item_id": "old-lot", "account_id": "seller", "phase": "restore_rejected"}
+    )
+    calls = []
+
+    async def rejected(item, visible):
+        calls.append((item, visible))
+        raise ServiceError("playerok_visibility_http_403")
+
+    market.set_visible = rejected
+    for _ in range(5):
+        state = ui.db.get("visibility_recovery", {})
+        state["next_at"] = 0
+        ui.db.set("visibility_recovery", state)
+        await ui.automatic_recovery()
+    assert calls == [("old-lot", True)] * 3
+    assert ui.db.get("live_enabled")
+    assert len(ui.db.all("SELECT * FROM outbox WHERE purpose='legacy_recovery'")) == 1
+    ui.db.set(
+        "visibility_test_pending",
+        {"item_id": "old-lot", "account_id": "seller", "phase": "restore_requested"},
+    )
+    state = ui.db.get("visibility_recovery")
+    state["next_at"] = 0
+    ui.db.set("visibility_recovery", state)
+    await ui.automatic_recovery()
+    assert len(calls) == 3  # uncertain write cannot be repeated
+    market.items["old-lot"]["status"] = "APPROVED"
+    state["next_at"] = 0
+    ui.db.set("visibility_recovery", state)
+    await ui.automatic_recovery()
+    assert not ui.db.get("visibility_test_pending")
+    assert len(calls) == 3
+
+
+async def test_uncertain_legacy_hide_is_settled_automatically_after_separate_fresh_reads(panel):
+    ui, _, _ = panel
+    ui.db.set(
+        "visibility_test_pending", {"item_id": "old-lot", "account_id": "seller", "phase": "hide_requested"}
+    )
+    for attempt in range(3):
+        state = ui.db.get("visibility_recovery", {})
+        state["next_at"] = 0
+        ui.db.set("visibility_recovery", state)
+        await ui.automatic_recovery()
+        assert bool(ui.db.get("visibility_test_pending")) == (attempt < 2)
+    assert not ui.engine.market.current.transitions

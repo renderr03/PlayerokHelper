@@ -74,17 +74,8 @@ async def test_slug_lookup_uses_existing_read_contract_and_does_not_treat_short_
         await api.close()
 
 
-def confirmation(session):
-    return next(
-        b.callback_data
-        for row in session.calls[-1].reply_markup.inline_keyboard
-        for b in row
-        if b.callback_data.startswith("connect:visibility:run:")
-    )
-
-
-async def test_public_product_link_is_resolved_before_single_use_visibility_confirmation(panel):
-    ui, session, send = panel
+async def test_public_product_link_resolution_remains_read_only(panel):
+    ui, _, _ = panel
     market = ui.engine.market
     calls = []
 
@@ -93,37 +84,27 @@ async def test_public_product_link_is_resolved_before_single_use_visibility_conf
         return {**await market.item(ITEM_ID), "name": "FC 27 аренда", "slug": SLUG}
 
     market.item_by_slug = by_slug
-    await send(callback="connect:visibility")
-    anchor = ui.panels[(ui.bot.id, 42, 42)].message_id
-    await send(LINK)
-    assert calls == [SLUG] and not market.transitions
-    assert session.calls[-1].message_id == anchor and "FC 27 аренда" in session.calls[-1].text
-    confirm = confirmation(session)
-    await send(callback=confirm)
-    assert market.transitions == [(ITEM_ID, False), (ITEM_ID, True)]
-    assert ui.db.get("visibility_proof")["item_id"] == ITEM_ID
-    await send(callback=confirm)
-    assert len(market.transitions) == 2
+    result = await ui.resolve_own_lot(LINK, active=True)
+    assert calls == [SLUG] and result["id"] == ITEM_ID
+    assert not market.transitions and not ui.db.get("visibility_proof")
 
 
-async def test_invalid_link_shows_new_feedback_and_invalidates_previous_confirmation(panel):
-    ui, session, send = panel
-    await send(callback="connect:visibility")
-    prompt = session.calls[-1].text
-    anchor = ui.panels[(ui.bot.id, 42, 42)].message_id
-    await send(ITEM_ID)
-    previous = confirmation(session)
-    await send("https://playerok.com/profile/myshop")
-    assert "Ссылка не распознана" in session.calls[-1].text
-    assert session.calls[-1].text != prompt and session.calls[-1].message_id == anchor
-    await send(callback=previous)
-    assert "устарело" in session.calls[-1].text
-    assert not ui.engine.market.transitions
+async def test_invalid_product_link_does_not_make_requests(panel):
+    ui, _, _ = panel
+    market = ui.engine.market
+
+    async def forbidden(*args):
+        raise AssertionError("Invalid URL triggered an API call")
+
+    market.profile = market.item_by_slug = forbidden
+    with pytest.raises(ValueError):
+        await ui.resolve_own_lot("https://playerok.com/profile/myshop")
+    assert not market.transitions
 
 
 @pytest.mark.parametrize("case", ["missing", "foreign", "inactive", "network", "invalid"])
-async def test_public_link_failures_keep_form_and_never_mutate_lots(panel, case):
-    ui, session, send = panel
+async def test_public_link_lookup_failure_never_mutates_lots(panel, case):
+    ui, _, _ = panel
     market = ui.engine.market
 
     async def by_slug(slug):
@@ -138,52 +119,50 @@ async def test_public_link_failures_keep_form_and_never_mutate_lots(panel, case)
         }
 
     market.item_by_slug = by_slug
-    await send(callback="connect:visibility")
-    await send(LINK)
     expected = {
-        "missing": "не найден",
-        "foreign": "другому продавцу",
-        "inactive": "сейчас не продаётся",
-        "network": "Не удалось получить товар",
-        "invalid": "неполные данные",
+        "missing": "playerok_item_not_found",
+        "foreign": "lot_not_owned",
+        "inactive": "lot_not_active",
+        "network": "playerok_network",
+        "invalid": "playerok_item_invalid",
     }[case]
-    assert expected in session.calls[-1].text
+    with pytest.raises(ServiceError, match=expected):
+        await ui.resolve_own_lot(LINK, active=True)
     assert not market.transitions and not ui.db.get("visibility_proof")
-    assert any(
-        b.callback_data == "ui:cancel" for row in session.calls[-1].reply_markup.inline_keyboard for b in row
-    )
-    await send(callback="ui:cancel")
-    assert "Ввод отменён" in session.calls[-1].text
 
 
-async def test_old_confirmation_cannot_act_on_new_selection(panel):
+async def test_retired_confirmation_cannot_act_on_new_binding_selection(panel):
     ui, session, send = panel
-    await send(callback="connect:visibility")
+    await send(callback="bind:new")
     await send(ITEM_ID)
-    previous = confirmation(session)
-    await send("76359304-e548-4fd3-a056-a155cab30dd3")
-    assert confirmation(session) != previous
-    await send(callback=previous)
+    await send(callback="connect:visibility:run:previous-nonce")
+    assert "Тест скрытия больше не нужен" in session.calls[-1].text
     assert not ui.engine.market.transitions
 
 
 @pytest.mark.parametrize("case", ["legacy", "expired", "left_form"])
-async def test_legacy_or_expired_visibility_button_never_changes_lot(panel, monkeypatch, case):
-    from shopbot.models import now
+async def test_legacy_visibility_buttons_are_retired_even_with_old_fsm_data(panel, case):
+    from aiogram.fsm.context import FSMContext
+    from aiogram.fsm.storage.base import StorageKey
+    from aiogram.fsm.storage.memory import MemoryStorage
+
+    from shopbot.account_ui import ConnectionForm
 
     ui, session, send = panel
-    await send(callback="connect:visibility")
-    await send(ITEM_ID)
-    confirm = confirmation(session)
-    if case == "expired":
-        later = now() + 121
-        monkeypatch.setattr("shopbot.account_ui.now", lambda: later)
-    elif case == "left_form":
-        await send(callback="menu:auto")
-    else:
-        confirm = "connect:visibility:run"
-    await send(callback=confirm)
-    assert "устарело" in session.calls[-1].text
+    # All forms of old callback remain harmless, including an active old form.
+    confirm = "connect:visibility:run" if case == "legacy" else "connect:visibility:run:old-nonce"
+    state = FSMContext(storage=MemoryStorage(), key=StorageKey(bot_id=ui.bot.id, chat_id=42, user_id=42))
+    await state.set_state(ConnectionForm.visibility)
+    await state.update_data(
+        visibility_item=ITEM_ID,
+        visibility_nonce="old-nonce",
+        visibility_expires=0 if case == "expired" else 9999999999,
+    )
+    await send(callback="connect:home")
+    message = ui.panels[(ui.bot.id, 42, 42)].as_(ui.bot)
+    await ui.connection_callback(message, confirm, state)
+    assert "Тест скрытия больше не нужен" in session.calls[-1].text
+    assert await state.get_state() is None
     assert not ui.engine.market.transitions
 
 

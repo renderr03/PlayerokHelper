@@ -24,7 +24,7 @@ from aiogram.types import (
 from . import __version__
 from .account_ui import AccountUI, ConnectionForm, lot_error_text
 from .analytics import Analytics
-from .checks import binding_fingerprint, connection_snapshot, needs_kosell, preview_delivery
+from .checks import preview_delivery
 from .engine import Engine
 from .external_ui import ExternalUI
 from .loyalty import Loyalty
@@ -174,7 +174,7 @@ class TelegramUI(AccountUI, ExternalUI, SellerUI):
                     [("⭐ Автонастройки", "menu:auto"), ("⚡ Плагины", "menu:plugins")],
                     [("📈 Аналитика", "menu:analytics"), ("🎁 Бонусные товары", "s:loyalty")],
                     [("👤 Профиль", "menu:profile"), ("📍 Управление", "menu:account")],
-                    [("🧙 Настроить магазин", "setup:home"), ("⬆️ Обновления", "updates:home")],
+                    [("⚙️ Настроить магазин", "setup:home"), ("⬆️ Обновления", "updates:home")],
                     [("📞 Помощь", "menu:help")],
                 ]
             ),
@@ -195,110 +195,95 @@ class TelegramUI(AccountUI, ExternalUI, SellerUI):
 
     async def status(self, message, state=None):
         status = self.engine.diagnostic()
+        labels = {
+            "orders": "заказы",
+            "chats": "сообщения",
+            "listings": "управление лотами",
+            "providers": "поставщики",
+            "delivery": "уведомления",
+            "local": "отчёты",
+        }
+        unavailable = []
+        for name, label in labels.items():
+            health = self.db.get("worker_health:" + name, {})
+            if not health.get("ok", True) and health.get("failures", 0) >= 3:
+                unavailable.append(label)
+        background = (
+            "Повторяем подключение: " + ", ".join(unavailable)
+            if unavailable
+            else "Автоматический контроль включён"
+        )
         await message.answer(
             "📋 Состояние магазина\n\n"
             f"🔌 Подключение: {self.readiness_label()}\n"
             f"⏸ Пауза: {'да' if status['paused'] else 'нет'}\n\n🛍 Заказов: {status['orders']}\n"
             f"⚠️ Требуют проверки: {status['review']}\nНеопределённые отправки: {status['uncertain']}\n"
             f"Внешних заказов в работе: {status['provider_pending']}\nВнешних заказов на сверке: {status['provider_review']}\n"
-            f"Последняя успешная сверка: {self.engine.expiry(self.db.get('last_poll'))}"
+            f"Последняя успешная сверка: {self.engine.expiry(self.db.get('last_poll'))}\n\n"
+            f"🔄 {background}",
+            reply_markup=keyboard([("🔌 Подключения", "connect:home"), ("🏠 Главное меню", "menu:home")]),
         )
 
     async def setup_menu(self, message, state):
         await state.clear()
-        snapshot = await connection_snapshot(
-            self.db, self.engine.market, self.engine.kosell, check_kosell=needs_kosell(self.db)
-        )
-        bindings = self.db.all("SELECT * FROM bindings ORDER BY rowid")
-        source = self.db.get("setup_source") or (
-            "kosell"
-            if any(b["module"] != "stock" for b in bindings)
-            else next(
-                (b["fulfillment"] for b in bindings if b["fulfillment"] in {"stars", "smm"}),
-                "stock" if bindings else None,
-            )
-        )
-        external_ready = (
-            any(
-                self.engine.external.enabled(p)
-                for p in self.db.all("SELECT * FROM providers")
-                if (p["preset"] == "split") == (source == "stars")
-            )
-            if source in {"stars", "smm"}
-            else False
-        )
-        playerok_ok = snapshot["services"]["playerok"]["ok"]
-        kosell_ok = snapshot["services"].get("kosell", {}).get("ok", False)
-        visibility_ok = playerok_ok and not any(i.startswith("visibility_") for i in snapshot["issues"])
-        last = self.db.get("last_preview", {})
-        checked = next((b for b in bindings if b["item_id"] == last.get("item_id")), None)
-        checked_hash = binding_fingerprint(checked) if checked else None
-        if checked and checked["fulfillment"] in {"stars", "smm"}:
-            try:
-                ext = self.engine.external.binding(checked["item_id"])
-                checked_hash = self.engine.external.fingerprint(
-                    ext, self.engine.external.provider(ext["provider_id"])
-                )
-            except ValueError:
-                checked_hash = None
-        preview_ok = (
-            checked
-            and last.get("ok")
-            and now() - last.get("at", 0) < 60
-            and checked_hash == last.get("binding")
-        )
-
-        def mark(ok):
-            return "✅" if ok else "⬜"
-
+        snapshot = await self.refresh_connections()
+        services = snapshot["services"]
+        profile = self.db.get("profile") or {}
+        playerok_ok = services.get("playerok", {}).get("ok") is True
+        kosell = services.get("kosell", {})
+        source = self.db.get("setup_source")
+        count = self.db.one("SELECT count(*) n FROM bindings")["n"]
         lines = [
-            "🧙 Мастер первого запуска",
-            "Подготовим магазин к работе — шаг за шагом.\n",
-            f"{mark(playerok_ok)} 1. Подключить Playerok",
-            f"{mark(source and (source == 'stock' or external_ready or (source == 'kosell' and kosell_ok)))} 2. Источник: "
+            "⚙️ Ваш магазин",
+            "",
+            "🎮 Playerok: "
+            + ("✅ " + profile.get("username", "подключён") if playerok_ok else "не подключён"),
+            "🎮 KOSell: "
             + (
-                {"stock": "свой склад", "kosell": "KOSell", "stars": "Telegram Stars", "smm": "SMM"}.get(
-                    source, "выберите ниже"
-                )
+                "✅ " + money(rub((self.db.get("kosell_balance") or {})["balance_rub"]))
+                if kosell.get("ok")
+                else "временно нет связи"
+                if kosell.get("configured")
+                else "не добавлен"
             ),
-            f"{mark(visibility_ok)} 3. Проверить скрытие и восстановление",
-            f"{mark(bindings)} 4. Привязать первый лот",
-            f"{mark(preview_ok)} 5. Проверить сценарий в карточке лота (актуальность 60 секунд)",
-            "\nВыберите нужный шаг кнопкой ниже.",
+            "",
+            "📦 Настроено лотов: " + str(count),
+            "Источник: "
+            + {"kosell": "KOSell", "stock": "свой склад", "stars": "Telegram Stars", "smm": "SMM"}.get(
+                source, "выберите ниже"
+            ),
+            "",
+            "Доступ и баланс проверяются автоматически. Тест со снятием товара не нужен.",
         ]
-        if snapshot["issues"]:
-            lines.append(
-                "\n"
-                + (
-                    "Добавьте аккаунт Playerok."
-                    if not playerok_ok
-                    else "Завершите отмеченные шаги настройки."
-                )
-            )
-        rows = [
-            ("➕ Добавить аккаунт Playerok" if not playerok_ok else "🔌 Подключения", "connect:home"),
-            (
-                "🔄 Восстановление тестового лота"
-                if self.db.get("visibility_test_pending")
-                else "🧪 Проверить скрытие тестового лота",
-                "connect:visibility:recover"
-                if self.db.get("visibility_test_pending")
-                else "connect:visibility",
-            ),
-            ("🎮 Подключить KOSell", "connect:key:kosell"),
-            ("📦 Использовать свой склад", "setup:source:stock"),
+        if not count:
+            lines += [
+                "",
+                "Выберите свой лот, товар поставщика, срок аренды и лимит закупки. После сохранения бот начнёт обрабатывать новые оплаченные заказы этого лота.",
+            ]
+        if self.db.get("visibility_test_pending"):
+            lines += [
+                "",
+                "🛠 Восстанавливаем прежний тестовый лот отдельно. Он временно исключён из автоматизации.",
+            ]
+        rows = []
+        if not playerok_ok:
+            rows.append(("➕ Добавить Playerok", "connect:playerok"))
+        if not kosell.get("configured"):
+            rows.append(("🎮 Подключить KOSell", "connect:key:kosell"))
+        rows += [
+            ("📦 Настроить лот", "bind:new"),
+            ("🛍 Мои лоты", "bindings:all"),
             ("🎮 Использовать KOSell", "setup:source:kosell"),
-            ("Telegram Stars", "setup:source:stars"),
-            ("SMM-услуги", "setup:source:smm"),
-            ("🎮 Проверить KOSell", "connect:check:kosell"),
-            ("➕ Привязать лот", "bind:new"),
+            ("📦 Использовать свой склад", "setup:source:stock"),
+            ("⭐ Telegram Stars", "setup:source:stars"),
+            ("💬 SMM-услуги", "setup:source:smm"),
+            ("🔌 Управлять подключениями", "connect:home"),
         ]
         if source in {"stars", "smm"}:
-            rows.append(("Настроить поставщика", "x:home:" + source))
-        rows += [
-            ("🧪 " + (b["title"][:30] or b["item_id"]), "preview:lot:" + b["item_id"]) for b in bindings[:10]
-        ]
-        rows += [("🚨 Предупреждения", "alerts:home"), ("‹ В меню", "menu:home")]
+            rows.append(("⚙️ Настроить поставщика", "x:home:" + source))
+        if self.db.get("visibility_test_pending"):
+            rows.append(("🛠 Помощь с прежним лотом", "connect:visibility:recover"))
+        rows.append(("🏠 Главное меню", "menu:home"))
         await message.answer("\n".join(lines), reply_markup=keyboard(rows))
 
     async def alerts_menu(self, message):
@@ -1503,6 +1488,23 @@ class TelegramUI(AccountUI, ExternalUI, SellerUI):
                     if order_id
                     else keyboard([("Открыть магазин", "menu:home")])
                 )
+                if purpose == "legacy_recovery":
+                    markup = keyboard([("🛠 Открыть восстановление", "connect:visibility:recover")])
+                    pending = self.db.get("visibility_test_pending") or {}
+                    try:
+                        item_id = str(uuid.UUID(pending["item_id"]))
+                    except (ValueError, KeyError, TypeError):
+                        pass
+                    else:
+                        markup.inline_keyboard.insert(
+                            0,
+                            [
+                                InlineKeyboardButton(
+                                    text="🌐 Открыть лот в Playerok",
+                                    url="https://playerok.com/products/" + item_id,
+                                )
+                            ],
+                        )
                 if purpose == "update":
                     markup = keyboard([("⬆️ Обновить бота", "updates:home")])
                     release = self.updates.available()

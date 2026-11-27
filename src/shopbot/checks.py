@@ -2,16 +2,26 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from dataclasses import dataclass, field
 
 from .models import ServiceError, money, now, rub, timestamp
 
+CONNECTION_TIMEOUT = 15
+
+
+def recovery_item(db, item_id):
+    pending = db.get("visibility_test_pending")
+    return isinstance(pending, dict) and pending.get("item_id") == item_id
+
 
 def needs_kosell(db):
-    return db.get("setup_source") == "kosell" or bool(
-        db.one("SELECT item_id FROM bindings WHERE module IN ('kosell','extend') LIMIT 1")
+    return (
+        bool(db.get("kosell_token"))
+        or db.get("setup_source") == "kosell"
+        or bool(db.one("SELECT item_id FROM bindings WHERE module IN ('kosell','extend') LIMIT 1"))
     )
 
 
@@ -20,10 +30,8 @@ def binding_fingerprint(binding):
 
 
 async def connection_snapshot(db, market, kosell, *, check_kosell=True):
-    result = {
-        "issues": ["visibility_restore_pending"] if db.get("visibility_test_pending") else [],
-        "services": {},
-    }
+    result = {"issues": [], "services": {}, "at": now()}
+
     for name, client, method in [("playerok", market, "profile"), ("kosell", kosell, "balance")]:
         if name == "kosell" and not check_kosell:
             continue
@@ -34,10 +42,14 @@ async def connection_snapshot(db, market, kosell, *, check_kosell=True):
             result["issues"].append(name + "_not_configured")
             continue
         try:
-            value = await getattr(client, method)()
+            async with asyncio.timeout(CONNECTION_TIMEOUT):
+                value = await getattr(client, method)()
             if name == "playerok":
                 if not value["id"]:
                     raise ValueError()
+                expected = (db.get("profile") or {}).get("id")
+                if expected and expected != value["id"]:
+                    raise ServiceError("playerok_account_changed")
                 result["profile"] = {k: value[k] for k in ("id", "username", "balance")}
             else:
                 if rub(value["balance_rub"]) < 0:
@@ -47,17 +59,60 @@ async def connection_snapshot(db, market, kosell, *, check_kosell=True):
                     "balance_usd": value.get("balance_usd"),
                 }
             status["ok"] = True
+        except TimeoutError:
+            result["issues"].append(name + "_timeout")
         except ServiceError as exc:
             result["issues"].append(exc.code)
         except (KeyError, ValueError, TypeError, ArithmeticError):
             result["issues"].append(name + "_invalid_response")
-    if not market.visibility:
-        result["issues"].append("visibility_contract_missing")
-    else:
-        proof = db.get("visibility_proof") or {}
-        if proof.get("account_id") != market.user_id or proof.get("fingerprint") != market.fingerprint():
-            result["issues"].append("visibility_roundtrip_not_verified")
     return result
+
+
+def save_connections(db, snapshot):
+    """Persist actual read results; never fabricate a visibility test proof."""
+    if "profile" in snapshot:
+        db.set("profile", snapshot["profile"])
+        db.set("last_profile", now())
+    if "kosell_balance" in snapshot:
+        db.set("kosell_balance", snapshot["kosell_balance"])
+    db.set("connection_snapshot", snapshot)
+    services = snapshot["services"]
+    market_ready = services.get("playerok", {}).get("ok") is True
+    db.set("live_enabled", market_ready)
+    labels = []
+    for name, label in (("playerok", "Playerok"), ("kosell", "KOSell")):
+        status = services.get(name)
+        if status:
+            labels.append(
+                label
+                + (
+                    ": подключён"
+                    if status["ok"]
+                    else ": нет связи"
+                    if status["configured"]
+                    else ": не добавлен"
+                )
+            )
+    db.set("readiness_status", " · ".join(labels) or "Добавьте аккаунт Playerok")
+
+
+def connected_service(db, name, value):
+    """A credential validation already performed the connection check."""
+    snapshot = db.get("connection_snapshot") or {"services": {}, "issues": []}
+    if now() - snapshot.get("at", 0) >= 60:
+        # A newly validated supplier cannot validate an old Playerok session.
+        for status in snapshot["services"].values():
+            status["ok"] = False
+    if name != "playerok":
+        snapshot.pop("profile", None)
+    snapshot["services"][name] = {"configured": True, "ok": True}
+    snapshot["at"] = now()
+    snapshot["issues"] = []
+    if name == "playerok":
+        snapshot["profile"] = {k: value[k] for k in ("id", "username", "balance")}
+    else:
+        snapshot["kosell_balance"] = {k: value[k] for k in ("balance_rub", "balance_usd") if k in value}
+    save_connections(db, snapshot)
 
 
 @dataclass
@@ -91,6 +146,8 @@ async def preview_delivery(engine, item_id, *, rental_id=None):
     if not binding:
         result.issues.append("Лот не привязан.")
         return result
+    if recovery_item(db, item_id):
+        result.issues.append("Этот лот ожидает восстановления продажи.")
     result.binding = binding_fingerprint(binding)
     result.observations.append("Лот: " + binding["title"][:150])
     if db.get("paused") or binding["paused"]:

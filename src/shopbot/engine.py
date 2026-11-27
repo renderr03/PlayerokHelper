@@ -6,6 +6,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from .alerts import Alerts
+from .checks import recovery_item
 from .db import Database
 from .external import MODES, External
 from .loyalty import Loyalty
@@ -181,6 +182,8 @@ class Engine:
                 return
             if self.db.get("paused") or not self.db.get("live_enabled", False):
                 return
+            if row["stage"] == "new" and recovery_item(self.db, row["item_id"]):
+                return
             if row["stage"] == "extending":
                 self.fail(order_id, "extension_interrupted_check_provider", review=True)
                 return
@@ -203,6 +206,15 @@ class Engine:
                 if binding["paused"] and row["stage"] == "new":
                     self.fail(order_id, "listing_paused")
                     return
+                if row["stage"] == "new" and row["module"] in {"kosell", "extend"}:
+                    supplier = (self.db.get("connection_snapshot") or {}).get("services", {}).get("kosell")
+                    if not getattr(self.kosell, "configured", True) or (
+                        supplier is not None and not supplier["ok"]
+                    ):
+                        # Wait for automatic reconnection, without failing the
+                        # paid order or blocking stock deliveries in other lots.
+                        self.db.set("retry:" + order_id, now() + 15)
+                        return
                 if row["module"] in MODES:
                     await self.external.process(row, self.external.binding(row["item_id"]))
                     return

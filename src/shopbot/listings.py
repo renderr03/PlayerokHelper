@@ -5,6 +5,7 @@ import uuid
 from datetime import datetime
 
 from .alerts import Alerts
+from .checks import recovery_item
 from .engine import Engine
 from .margins import record
 from .models import ServiceError, money, now, rub
@@ -85,6 +86,8 @@ class Listings:
                         "KOSell недоступен: скрываем связанные лоты.", f"kosell_outage:{int(now() // 3600)}"
                     )
             for binding in rows:
+                if recovery_item(self.db, binding["item_id"]):
+                    continue
                 try:
                     reason = await self.availability(binding, products, balance, quotes)
                 except ServiceError:
