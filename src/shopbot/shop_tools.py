@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from decimal import ROUND_CEILING, Decimal
 
 from .models import now
+from .providers import PRESETS
 
 MODES = {"kosell", "extend", "stock", "own_rent", "own_extend", "stars", "smm"}
 TAGS = {"regular": "Постоянный", "help": "Нужна помощь", "manual": "Ручной ответ"}
@@ -65,7 +66,7 @@ def validate_template(value):
             raise ValueError("Неверный лимит внешней услуги")
         if not isinstance(ext["currency"], str) or not ext["currency"].isalpha() or len(ext["currency"]) > 8:
             raise ValueError("Неверная валюта")
-        if ext["preset"] not in {"split", "twiboost", "vexboost", "jap"}:
+        if ext["preset"] not in PRESETS:
             raise ValueError("Неизвестный поставщик")
     elif ext is not None:
         raise ValueError("Лишние параметры внешней услуги")

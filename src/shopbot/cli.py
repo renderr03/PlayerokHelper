@@ -14,6 +14,7 @@ from .config import Config
 from .db import Database
 from .kosell import KOSell
 from .models import ServiceError, now, rub
+from .providers import PRESETS
 from .runtime import market_from_config, readiness, serve
 
 
@@ -101,7 +102,7 @@ def main():
     provider_parser = sub.add_parser(
         "provider-setup", help="Configure an external provider with a hidden token prompt"
     )
-    provider_parser.add_argument("--preset", required=True, choices=["split", "twiboost", "vexboost", "jap"])
+    provider_parser.add_argument("--preset", required=True, choices=list(PRESETS))
     sub.add_parser("keygen", help="Generate a new encryption key; do not rotate an existing database key")
     sub.add_parser("doctor", help="Read-only connection checks; no purchases or listing changes")
     sub.add_parser("telegram-check", help="Проверить токен и подключение Telegram без отправки сообщений")

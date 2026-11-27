@@ -259,7 +259,10 @@ class AccountUI:
             await message.answer(
                 "Выберите SMM-панель:",
                 reply_markup=buttons(
-                    [(PRESETS[p][2], "connect:key:" + p) for p in ("twiboost", "vexboost", "jap")]
+                    [
+                        (PRESETS[p][2], "connect:key:" + p)
+                        for p in ("vingboost", "twiboost", "vexboost", "jap")
+                    ]
                     + [("‹ Назад", "connect:home")]
                 ),
             )
@@ -418,8 +421,28 @@ class AccountUI:
                         )
                     else:
                         provider_id = self.db.one("SELECT id FROM providers WHERE preset=?", (preset,))["id"]
+                        summary = "Ключ сохранён. Выберите товар и настройте поставщика."
+                        if preset == "vingboost":
+                            await message.answer("⏳ Подключаю VingBoost…")
+                            try:
+                                async with asyncio.timeout(CHECK_TIMEOUT):
+                                    balances, catalog = await self.engine.external.check(provider_id)
+                                summary = (
+                                    "✅ VingBoost подключён\n\n💰 Баланс: "
+                                    + ", ".join(f"{v} {k}" for k, v in balances.items())
+                                    + f"\nПоддерживаемых услуг: {len(catalog)}.\n\nНастройте лот, лимиты и включите поставщика. Закупки пока выключены."
+                                )
+                            except (
+                                ServiceError,
+                                TimeoutError,
+                                KeyError,
+                                ValueError,
+                                TypeError,
+                                ArithmeticError,
+                            ):
+                                summary = "⚠️ Ключ VingBoost сохранён, но подключение не подтверждено. Проверьте ключ и активность аккаунта в кабинете поставщика. Закупки выключены; повторная проверка доступна в настройках поставщика."
                         await message.answer(
-                            "Ключ сохранён. Выберите товар и настройте поставщика.",
+                            summary,
                             reply_markup=buttons(
                                 [
                                     ("⚙️ Настроить поставщика", "x:provider:" + str(provider_id)),

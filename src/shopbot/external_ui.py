@@ -166,7 +166,7 @@ class ExternalUI:
         )
         lines = [
             f"Каталог {len(rows)} услуг · страница {page + 1}",
-            "Поддерживаются услуги типа Default; цена указана за 1000 единиц.",
+            "Показаны услуги с поддерживаемыми параметрами; цена указана за 1000 единиц.",
         ]
         if not selecting:
             lines += [
@@ -255,7 +255,7 @@ class ExternalUI:
                 await message.answer(
                     "Чтение API проверено. Баланс: "
                     + ", ".join(f"{v} {k}" for k, v in balances.items())
-                    + (f". Услуг Default: {len(catalog)}." if catalog else ".")
+                    + (f". Поддерживаемых услуг: {len(catalog)}." if catalog else ".")
                 )
             except (ServiceError, KeyError, TypeError, ValueError, ArithmeticError):
                 await message.answer(

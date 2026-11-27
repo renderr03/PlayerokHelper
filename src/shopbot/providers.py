@@ -14,8 +14,25 @@ from .models import ServiceError, timestamp
 PRESETS = {
     "split": ("split", "https://api.split.tg", "Split"),
     "twiboost": ("smm", "https://twiboost.com/api/v2", "Twiboost"),
+    "vingboost": ("smm", "https://vingboost.com/api/v2", "VingBoost"),
     "vexboost": ("smm", "https://vexboost.ru/api/v2", "Vexboost"),
     "jap": ("smm", "https://justanotherpanel.com/api/v2", "JustAnotherPanel"),
+}
+
+
+# Official VingBoost developer reference: these task types use only
+# service + link + quantity. Comments/votes/comment reactions need context
+# our form does not collect; never silently treat them as a Default order.
+VINGBOOST_SIMPLE_TYPES = {
+    "default",
+    "like",
+    "subscribe",
+    "dislike",
+    "repost",
+    "friend",
+    "retweet",
+    "follow",
+    "favorite",
 }
 
 
@@ -39,6 +56,7 @@ def currency(value):
 
 class ProviderClient:
     def __init__(self, preset, token, *, transport=None):
+        self.preset = preset
         self.kind, url, _ = PRESETS[preset]
         self.http = httpx.AsyncClient(
             base_url=url if self.kind == "split" else "",
@@ -108,7 +126,12 @@ class ProviderClient:
         for row in rows:
             if not isinstance(row, dict):
                 raise ServiceError("provider_invalid_catalog")
-            if row.get("type") != "Default":
+            supported = (
+                (isinstance(row.get("type"), str) and row["type"].casefold() in VINGBOOST_SIMPLE_TYPES)
+                if self.preset == "vingboost"
+                else row.get("type") == "Default"
+            )
+            if not supported:
                 continue
             result.append(
                 {
@@ -257,6 +280,8 @@ class ProviderClient:
             "canceled": "cancelled",
             "cancelled": "cancelled",
         }
+        if self.preset == "vingboost":
+            mapping.update({"awaiting": "processing", "fail": "review"})
         state = mapping.get(str(data["status"]).casefold(), "review")
         cost, unit = amount(data["charge"]), currency(data["currency"])
         remains = int(data["remains"])
@@ -278,6 +303,21 @@ class ProviderClient:
         if self.kind != "smm" or action not in {"cancel", "refill"}:
             raise ServiceError("provider_action_unavailable")
         # These requests also have a persisted intent in the application.
-        return await self.smm(
-            action, paid=True, **({"orders": remote} if action == "cancel" else {"order": remote})
+        result = await self.smm(
+            action,
+            paid=True,
+            **(
+                {"orders": remote} if action == "cancel" and self.preset != "vingboost" else {"order": remote}
+            ),
         )
+        if self.preset == "vingboost":
+            if not isinstance(result, dict):
+                raise ServiceError("provider_action_not_confirmed", ambiguous=True)
+            if action == "cancel":
+                if result.get("ok") is not True and result.get("ok") != "true":
+                    raise ServiceError("provider_action_not_confirmed", ambiguous=True)
+            else:
+                reference = str(result.get("refill", ""))
+                if not reference.isdigit() or int(reference) <= 0:
+                    raise ServiceError("provider_action_not_confirmed", ambiguous=True)
+        return result
