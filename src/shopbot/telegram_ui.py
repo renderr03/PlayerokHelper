@@ -277,13 +277,20 @@ class TelegramUI(AccountUI, ExternalUI, SellerUI):
             )
         rows = [
             ("➕ Добавить аккаунт Playerok" if not playerok_ok else "🔌 Подключения", "connect:home"),
-            ("🧪 Проверить скрытие тестового лота", "connect:visibility"),
+            (
+                "🔄 Восстановление тестового лота"
+                if self.db.get("visibility_test_pending")
+                else "🧪 Проверить скрытие тестового лота",
+                "connect:visibility:recover"
+                if self.db.get("visibility_test_pending")
+                else "connect:visibility",
+            ),
             ("🎮 Подключить KOSell", "connect:key:kosell"),
             ("📦 Использовать свой склад", "setup:source:stock"),
             ("🎮 Использовать KOSell", "setup:source:kosell"),
             ("Telegram Stars", "setup:source:stars"),
             ("SMM-услуги", "setup:source:smm"),
-            ("🔄 Проверить подключение", "setup:home"),
+            ("🎮 Проверить KOSell", "connect:check:kosell"),
             ("➕ Привязать лот", "bind:new"),
         ]
         if source in {"stars", "smm"}:

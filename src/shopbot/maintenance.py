@@ -63,6 +63,78 @@ def connection_diagnostics(db):
     return result
 
 
+def workflow_diagnostics(db):
+    pending = db.get("visibility_test_pending")
+    phase = pending.get("phase", "legacy") if isinstance(pending, dict) else None
+    phases = {"legacy", "hide_requested", "hide_verified", "restore_requested", "restore_rejected"}
+    status = db.get("visibility_last_status")
+    statuses = {
+        "APPROVED",
+        "DISCONTINUED",
+        "SOLD",
+        "REMOVED",
+        "BLOCKED",
+        "EXPIRED",
+        "DRAFT",
+        "PENDING_MODERATION",
+        "PENDING_APPROVAL",
+        "PENDING_STATUS_PAYMENT",
+        "DECLINED",
+    }
+    check = db.get("kosell_last_check")
+    safe_check = None
+    if isinstance(check, dict):
+        at = check.get("at")
+        safe_check = {
+            "ok": check.get("ok") is True,
+            "reason": check.get("reason")
+            if isinstance(check.get("reason"), str)
+            and check.get("reason")
+            in {"ok", "timeout", "auth", "unavailable", "invalid_response", "not_configured"}
+            else "unknown",
+            "at": at if type(at) in {int, float} and 0 < at < 100_000_000_000 else None,
+        }
+    error = db.get("visibility_last_error")
+    safe_error = None
+    if isinstance(error, str) and (
+        error
+        in {
+            "timeout",
+            "invalid_response",
+            "visibility_not_verified",
+            "visibility_restore_uncertain",
+            "visibility_wrong_account",
+            "visibility_recovery_required",
+            "visibility_contract_missing",
+            "playerok_visibility_network",
+            "playerok_visibility_invalid_response",
+            "playerok_visibility_failed",
+            "playerok_network",
+            "playerok_security_check",
+            "playerok_rate_limit",
+            "playerok_invalid_response",
+            "test_requires_own_active_listing",
+            "balance_decreased",
+            "unexpected",
+        }
+        or re.fullmatch(r"playerok_(?:visibility_)?http_[45][0-9]{2}", error)
+    ):
+        safe_error = error
+    return {
+        "visibility": {
+            "pending": bool(pending),
+            "last_error": safe_error,
+            "phase": phase if isinstance(phase, str) and phase in phases else "unknown",
+            "last_status": status if isinstance(status, str) and status in statuses else None,
+        },
+        "kosell_check": safe_check,
+        "uncertain_sends_by_channel": db.all(
+            "SELECT channel,count(*) AS count FROM outbox WHERE state='uncertain' "
+            "AND channel IN ('telegram','playerok') GROUP BY channel"
+        ),
+    }
+
+
 def update_status(directory):
     folder = Path(directory) / ".updates"
     request = read_json(folder / "request.json", {})
@@ -108,6 +180,7 @@ def diagnostics(db, directory):
         "uncertain_sends": db.one("SELECT count(*) count FROM outbox WHERE state='uncertain'")["count"],
         "update": update_status(directory),
         "connection": connection_diagnostics(db),
+        "workflows": workflow_diagnostics(db),
     }
     result = db.get("update_last_result", {})
     if isinstance(result, dict):

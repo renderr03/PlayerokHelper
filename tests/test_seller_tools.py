@@ -327,3 +327,25 @@ async def test_playerok_cooldown_blocks_requests_without_repeating_a_mutation():
         assert len(calls) == 1
     finally:
         await market.close()
+
+
+def test_workflow_diagnostics_preserve_phases_and_exclude_secrets(app, tmp_path):
+    _, db, _, _ = app
+    secret = "PRIVATE-SESSION-AND-KEY"
+    db.set(
+        "visibility_test_pending",
+        {"item_id": secret, "account_id": secret, "phase": "restore_requested", "cookie": secret},
+    )
+    db.set("visibility_last_status", "DISCONTINUED")
+    db.set("kosell_last_check", {"ok": False, "reason": "timeout", "at": 1795760198, "token": secret})
+    archive = zipfile.ZipFile(io.BytesIO(diagnostics(db, tmp_path)))
+    raw = archive.read("diagnostics.json")
+    assert secret.encode() not in raw
+    workflows = json.loads(raw)["workflows"]
+    assert workflows["visibility"] == {
+        "pending": True,
+        "last_error": None,
+        "phase": "restore_requested",
+        "last_status": "DISCONTINUED",
+    }
+    assert workflows["kosell_check"]["reason"] == "timeout"

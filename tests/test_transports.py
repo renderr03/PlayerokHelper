@@ -123,7 +123,8 @@ async def test_builtin_visibility_uses_documented_rest_routes_and_verifies_statu
 
     def handle(request):
         nonlocal state
-        if request.method == "POST":
+        if request.url.path != "/graphql":
+            assert request.method == "POST"
             paths.append(request.url.path)
             state = "DISCONTINUED" if request.url.path.endswith("/discontinue") else "APPROVED"
             return httpx.Response(204)
@@ -269,5 +270,48 @@ async def test_playerok_chat_messages_include_optional_sender_name():
     try:
         rows = await api.messages("chat")
         assert rows[0].user_name == "BuyerName" and rows[0].user_id == "buyer"
+    finally:
+        await api.close()
+
+
+async def test_visibility_uses_fresh_post_reads_and_polls_without_repeating_mutation():
+    item_id = "02d57c00-d5bd-4f31-8a31-ab3b2fb2af13"
+    mutations, reads = [], []
+
+    def handle(request):
+        if request.url.path != "/graphql":
+            mutations.append(request.url.path)
+            return httpx.Response(204)
+        assert request.method == "POST"
+        payload = json.loads(request.content)
+        assert payload["operationName"] == "item"
+        reads.append(payload)
+        status = "APPROVED" if len(reads) < 3 else "DISCONTINUED"
+        return httpx.Response(200, json={"data": {"item": {"id": item_id, "status": status}}})
+
+    api = Playerok({"cookie": "token=fake", "user_agent": "test"}, transport=httpx.MockTransport(handle))
+    try:
+        assert (await api.set_visible(item_id, False))["status"] == "DISCONTINUED"
+        assert len(mutations) == 1 and len(reads) == 3
+    finally:
+        await api.close()
+
+
+async def test_visibility_read_error_after_mutation_is_always_uncertain():
+    writes = []
+
+    def handle(request):
+        if request.url.path != "/graphql":
+            writes.append(request.url.path)
+            return httpx.Response(204)
+        raise httpx.ReadTimeout("private transport details")
+
+    api = Playerok({"cookie": "token=fake", "user_agent": "test"}, transport=httpx.MockTransport(handle))
+    try:
+        with pytest.raises(ServiceError) as error:
+            await api.set_visible("02d57c00-d5bd-4f31-8a31-ab3b2fb2af13", True)
+        assert error.value.ambiguous
+        assert len(writes) == 1
+        assert "private" not in str(error.value)
     finally:
         await api.close()

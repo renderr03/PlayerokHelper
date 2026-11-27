@@ -17,10 +17,12 @@ from .connections import EmailLogin, ManagedClient, session_input
 from .external import save_provider
 from .item_reference import item_reference
 from .kosell import KOSell
-from .models import ServiceError, now, rub
+from .models import ServiceError, money, now, rub
 from .navigation import buttons
 from .playerok import Playerok
 from .providers import PRESETS
+
+CHECK_TIMEOUT = 15
 
 DOCS = (
     "https://github.com/renderr03/PlayerokHelper/blob/"
@@ -46,6 +48,8 @@ def controls(back="connect:home"):
 def connection_error_text(error, *, playerok=True):
     """Show only known failure categories, never arbitrary server text or keys."""
     if not playerok:
+        if error.code == "kosell_not_configured":
+            return "Сначала добавьте API-ключ KOSell через кнопку «Заменить ключ»."
         if error.code == "kosell_http_401":
             return "KOSell не принял API-ключ. Проверьте его в кабинете поставщика."
         if error.code == "kosell_rate_limit":
@@ -126,7 +130,7 @@ class AccountUI:
                     ("🎮 Подключить KOSell", "connect:key:kosell"),
                     ("⭐ Подключить Split", "connect:key:split"),
                     ("Подключить SMM-панель", "connect:smm"),
-                    ("🔄 Проверить подключение", "setup:home"),
+                    ("🎮 Проверить KOSell", "connect:check:kosell"),
                     ("‹ Главное меню", "menu:home"),
                 ]
             ),
@@ -140,6 +144,19 @@ class AccountUI:
             return True
         if data == "connect:home":
             await self.connection_menu(message, state)
+        elif data == "connect:check:kosell":
+            await self.check_kosell(message)
+        elif data == "connect:visibility:recover":
+            await message.answer("⏳ Проверяю восстановление лота…")
+            try:
+                async with self.managed("market").exclusive() as market:
+                    async with asyncio.timeout(30):
+                        await self.restore_visibility(market, retry=True)
+                text = "✅ Лот снова в продаже. Новый тест скрытия не запускался."
+            except (ServiceError, TimeoutError, ValueError, KeyError, TypeError) as error:
+                self.record_visibility_error(error)
+                text = self.visibility_failure_text()
+            await message.answer(text, reply_markup=self.visibility_controls())
         elif data == "connect:playerok":
             await state.clear()
             await self.expire_logins(message.chat.id)
@@ -245,6 +262,9 @@ class AccountUI:
             )
         elif data == "connect:visibility":
             await state.clear()
+            if self.db.get("visibility_test_pending"):
+                await message.answer(self.visibility_failure_text(), reply_markup=self.visibility_controls())
+                return True
             await state.set_state(ConnectionForm.visibility)
             await message.answer(
                 "Пришлите обычную ссылку на свой активный тестовый товар Playerok. "
@@ -275,13 +295,11 @@ class AccountUI:
                 await message.answer("Проверяю скрытие и восстановление лота…")
                 try:
                     await self.test_visibility(item_id)
-                    await message.answer("Лот восстановлен. Проверка пройдена.")
-                except (ServiceError, ValueError, KeyError, TypeError):
-                    await message.answer(
-                        "Проверка не завершена. Откройте лот и проверьте его статус. "
-                        "Если восстановление не подтверждено, автоматизация останется отключённой."
-                    )
-                await self.setup_menu(message, state)
+                    text = "✅ Лот восстановлен. Проверка пройдена.\n\nМожно продолжить настройку магазина."
+                except (ServiceError, TimeoutError, ValueError, KeyError, TypeError) as error:
+                    self.record_visibility_error(error)
+                    text = self.visibility_failure_text()
+                await message.answer(text, reply_markup=self.visibility_controls())
         return True
 
     async def connection_input(self, message, state):
@@ -388,6 +406,7 @@ class AccountUI:
                 elif form == ConnectionForm.key.state:
                     preset = context["preset"]
                     if preset == "kosell":
+                        await message.answer("⏳ Проверяю API-ключ KOSell…")
                         await self.apply_kosell(text)
                     else:
                         save_provider(self.db, preset, text)
@@ -398,7 +417,7 @@ class AccountUI:
                             [
                                 (
                                     "Проверить подключение",
-                                    "setup:home"
+                                    "connect:check:kosell"
                                     if preset == "kosell"
                                     else "x:provider:"
                                     + str(
@@ -470,7 +489,12 @@ class AccountUI:
                 }:
                     error_text = "Проверка введённой сессии тоже завершилась HTTP 403. Cookie и User-Agent могут не подходить этой сети, либо доступ ограничивает площадка. Нажмите «Проверить доступ сервера»; повторный ввод того же токена пока не даст новой информации."
                 await message.answer(error_text, reply_markup=markup)
-            except (ValueError, KeyError, TypeError) as exc:
+            except TimeoutError:
+                await message.answer(
+                    "⏱ Поставщик не ответил вовремя. Ключ не сохранён. Попробуйте позже.",
+                    reply_markup=controls(),
+                )
+            except (ValueError, KeyError, TypeError, ArithmeticError) as exc:
                 reason = {
                     "Подождите минуту перед повторным запросом кода.": "Подождите минуту перед повторным запросом кода.",
                     "another_store": "В этой базе уже есть данные другого магазина. Переподключите прежний аккаунт Playerok.",
@@ -577,7 +601,8 @@ class AccountUI:
                 )
                 saved = False
                 try:
-                    balance = await client.balance()
+                    async with asyncio.timeout(CHECK_TIMEOUT):
+                        balance = await client.balance()
                     if rub(balance["balance_rub"]) < 0:
                         raise ServiceError("kosell_invalid_balance")
                     if self.kosell_in_use():
@@ -618,13 +643,103 @@ class AccountUI:
                 raise ServiceError("lot_not_active")
             return {**item, "id": item_id}
 
+    async def check_kosell(self, message):
+        await message.answer("⏳ Проверяю подключение KOSell…")
+        result = {"at": now(), "ok": False, "reason": "unavailable"}
+        try:
+            client = self.managed("kosell")
+            if not getattr(client, "configured", True):
+                raise ServiceError("kosell_not_configured")
+            async with asyncio.timeout(CHECK_TIMEOUT):
+                balance = await client.balance()
+            amount = rub(balance["balance_rub"])
+            if amount < 0:
+                raise ValueError()
+            result.update(ok=True, reason="ok")
+            text = "✅ KOSell подключён\n\n💰 Баланс: " + money(amount)
+        except TimeoutError:
+            result["reason"] = "timeout"
+            text = "⏱ KOSell не ответил за 15 секунд. Попробуйте позже. Сохранённый ключ не изменён."
+        except ServiceError as error:
+            result["reason"] = {
+                "kosell_http_401": "auth",
+                "kosell_not_configured": "not_configured",
+            }.get(error.code, "unavailable")
+            text = "⚠️ " + connection_error_text(error, playerok=False)
+        except (ValueError, KeyError, TypeError, ArithmeticError):
+            result["reason"] = "invalid_response"
+            text = "⚠️ KOSell вернул неполные данные баланса. Попробуйте позже."
+        self.db.set("kosell_last_check", result)
+        await message.answer(
+            text,
+            reply_markup=buttons(
+                [
+                    ("🔄 Проверить снова", "connect:check:kosell"),
+                    ("🔑 Заменить ключ", "connect:key:kosell"),
+                    ("‹ Подключения", "connect:home"),
+                    ("⚙️ Продолжить настройку", "setup:home"),
+                ]
+            ),
+        )
+
+    def record_visibility_error(self, error):
+        code = (
+            error.code
+            if isinstance(error, ServiceError)
+            else "timeout"
+            if isinstance(error, TimeoutError)
+            else "invalid_response"
+        )
+        known = {
+            "timeout",
+            "invalid_response",
+            "visibility_not_verified",
+            "visibility_restore_uncertain",
+            "visibility_wrong_account",
+            "visibility_recovery_required",
+            "visibility_contract_missing",
+            "playerok_visibility_network",
+            "playerok_visibility_invalid_response",
+            "playerok_visibility_failed",
+            "playerok_network",
+            "playerok_security_check",
+            "playerok_rate_limit",
+            "playerok_invalid_response",
+            "test_requires_own_active_listing",
+            "balance_decreased",
+        }
+        if code not in known and not re.fullmatch(r"playerok_(?:visibility_)?http_[45][0-9]{2}", code):
+            code = "unexpected"
+        self.db.set("visibility_last_error", code)
+
+    def visibility_controls(self):
+        rows = []
+        if self.db.get("visibility_test_pending"):
+            rows.append(("🔄 Проверить восстановление", "connect:visibility:recover"))
+        rows.append(("‹ Продолжить настройку", "setup:home"))
+        return buttons(rows)
+
+    def visibility_failure_text(self):
+        if self.db.get("visibility_test_pending"):
+            return (
+                "⚠️ Восстановление лота не подтверждено\n\n"
+                "Автоматизация отключена. Откройте лот в Playerok и восстановите продажу, "
+                "если он скрыт. Затем нажмите «Проверить восстановление». "
+                "Эта кнопка не снимает лот с продажи повторно."
+            )
+        return "⚠️ Проверка не пройдена. Автоматизация пока отключена. Проверьте статус лота в Playerok и попробуйте позже."
+
+    async def visibility_item(self, market, item_id):
+        method = getattr(market, "visibility_item", market.item)
+        return await method(item_id)
+
     async def test_visibility(self, item_id):
         proxy = self.managed("market")
         async with proxy.exclusive() as market:
             if self.db.get("visibility_test_pending"):
                 raise ServiceError("visibility_recovery_required")
             before = await market.profile()
-            item = await market.item(item_id)
+            item = await self.visibility_item(market, item_id)
             if (
                 not market.visibility
                 or (item.get("user") or {}).get("id") != market.user_id
@@ -633,13 +748,35 @@ class AccountUI:
                 raise ServiceError("test_requires_own_active_listing")
             self.db.set("live_enabled", False)
             self.db.set("visibility_proof", None)
-            self.db.set("visibility_test_pending", {"item_id": item_id, "account_id": market.user_id})
+            self.db.set("visibility_last_error", None)
+            self.db.set(
+                "visibility_test_pending",
+                {
+                    "item_id": item_id,
+                    "account_id": market.user_id,
+                    "phase": "hide_requested",
+                    "at": now(),
+                },
+            )
             hidden = False
             try:
-                await market.set_visible(item_id, False)
+                async with asyncio.timeout(25):
+                    await market.set_visible(item_id, False)
                 hidden = True
+                pending = self.db.get("visibility_test_pending")
+                self.db.set("visibility_test_pending", {**pending, "phase": "hide_verified"})
+            except (ServiceError, TimeoutError, ValueError, KeyError, TypeError) as error:
+                self.record_visibility_error(error)
+                raise
             finally:
-                await self.restore_visibility(market)
+                # The durable intent survives cancellation/process exit. Recovery
+                # runs independently of Telegram delivery and never hides again.
+                try:
+                    async with asyncio.timeout(30):
+                        await self.restore_visibility(market)
+                except (ServiceError, TimeoutError, ValueError, KeyError, TypeError) as error:
+                    self.record_visibility_error(error)
+                    raise
             if not hidden:
                 raise ServiceError("hide_uncertain")
             after = await market.profile()
@@ -657,23 +794,56 @@ class AccountUI:
             self.db.set("last_readiness", 0)
             self.db.audit("visibility_test_passed", item_id)
 
-    async def restore_visibility(self, market):
+    async def restore_visibility(self, market, *, retry=False):
         pending = self.db.get("visibility_test_pending")
         if not pending:
             return
+        self.db.set("live_enabled", False)
         await market.profile()
-        if market.user_id != pending["account_id"]:
+        if market.user_id != pending["account_id"] or not market.visibility:
             raise ServiceError("visibility_wrong_account")
         item_id = pending["item_id"]
-        item = await market.item(item_id)
+        item = await self.visibility_item(market, item_id)
+        if (item.get("user") or {}).get("id") != market.user_id:
+            raise ServiceError("visibility_wrong_account")
+        phase = pending.get("phase", "legacy")
+        self.db.set("visibility_last_status", item.get("status"))
         if item["status"] in market.visibility["hide"]["hidden_statuses"]:
-            await market.set_visible(item_id, True)
-        if (await market.item(item_id))["status"] != "APPROVED":
+            # A lost reply must not cause repeated restore mutations in the
+            # background. A definite rejection can be retried by the admin.
+            if phase == "restore_requested" or (phase == "restore_rejected" and not retry):
+                raise ServiceError("visibility_restore_uncertain")
+            self.db.set("visibility_test_pending", {**pending, "phase": "restore_requested"})
+            try:
+                await market.set_visible(item_id, True)
+            except ServiceError as error:
+                if not error.ambiguous:
+                    self.db.set("visibility_test_pending", {**pending, "phase": "restore_rejected"})
+                raise
+        elif item["status"] != "APPROVED":
+            # Never republish a sold, blocked, removed or moderation listing.
             raise ServiceError("visibility_restore_uncertain")
+        elif phase == "hide_requested" and not retry:
+            # Hide may have succeeded despite a failed/stale verification read.
+            # Do not erase recovery intent on an immediate APPROVED response.
+            raise ServiceError("visibility_restore_uncertain")
+        for attempt in range(3):
+            item = await self.visibility_item(market, item_id)
+            self.db.set("visibility_last_status", item.get("status"))
+            if item["status"] != "APPROVED":
+                raise ServiceError("visibility_restore_uncertain")
+            if attempt < 2:
+                await asyncio.sleep(0.25)
         self.db.set("visibility_test_pending", None)
+        self.db.set("visibility_last_result", {"at": now(), "restored": True})
 
     async def recover_visibility(self):
         if self.db.get("visibility_test_pending"):
             self.db.set("live_enabled", False)
-            async with self.managed("market").exclusive() as market:
-                await self.restore_visibility(market)
+            try:
+                async with self.managed("market").exclusive() as market:
+                    async with asyncio.timeout(30):
+                        await self.restore_visibility(market)
+            except (ServiceError, TimeoutError, ValueError, KeyError, TypeError) as error:
+                self.record_visibility_error(error)
+                raise

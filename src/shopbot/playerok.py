@@ -114,15 +114,15 @@ class Playerok:
     async def close(self):
         await self.client.aclose()
 
-    async def graphql(self, operation: str, variables=None, *, query=None, mutation=False):
+    async def graphql(self, operation: str, variables=None, *, query=None, mutation=False, fresh=False):
         async with self._requests:
             if time.time() < self._not_before:
                 raise ServiceError(
                     "playerok_rate_limit", retry_after=max(1, int(self._not_before - time.time()) + 1)
                 )
-            return await self._graphql(operation, variables, query=query, mutation=mutation)
+            return await self._graphql(operation, variables, query=query, mutation=mutation, fresh=fresh)
 
-    async def _graphql(self, operation: str, variables=None, *, query=None, mutation=False):
+    async def _graphql(self, operation: str, variables=None, *, query=None, mutation=False, fresh=False):
         if query is None:
             name = CONTRACT_NAMES[operation]
             query = files("shopbot").joinpath(f"contracts/{name}.graphql").read_text()
@@ -131,7 +131,7 @@ class Playerok:
             "persistedQuery": {"version": 1, "sha256Hash": hashlib.sha256(query.encode()).hexdigest()}
         }
         try:
-            if mutation:
+            if mutation or fresh:
                 response = await self.client.post("/graphql", json=payload)
             else:
                 response = await self.client.get(
@@ -362,6 +362,16 @@ class Playerok:
             )
         )["item"]
 
+    async def visibility_item(self, item_id: str):
+        # Read through POST to avoid a cached APQ GET after a visibility change.
+        return (
+            await self.graphql(
+                "item",
+                {"id": item_id, "hasSupportAccess": False, "showForbiddenImage": False},
+                fresh=True,
+            )
+        )["item"]
+
     async def item_by_slug(self, slug: str):
         return (
             await self.graphql("item", {"slug": slug, "hasSupportAccess": False, "showForbiddenImage": False})
@@ -432,8 +442,16 @@ class Playerok:
             await self.graphql(
                 part["operation"], substitute(part["variables"]), query=part["query"], mutation=True
             )
-        result = await self.item(item_id)
-        hidden = result["status"] in part["hidden_statuses"]
-        if hidden == visible or (visible and result["status"] != "APPROVED"):
-            raise ServiceError("visibility_not_verified", ambiguous=True)
-        return result
+        for attempt in range(3):
+            try:
+                result = await self.visibility_item(item_id)
+            except ServiceError as error:
+                # The mutation was sent already; a failed verification read
+                # says nothing about whether it was applied.
+                raise ServiceError(error.code, ambiguous=True, retry_after=error.retry_after) from None
+            hidden = result["status"] in part["hidden_statuses"]
+            if (visible and result["status"] == "APPROVED") or (not visible and hidden):
+                return result
+            if attempt < 2:
+                await asyncio.sleep(0.5)
+        raise ServiceError("visibility_not_verified", ambiguous=True)

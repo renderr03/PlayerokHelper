@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/renderr03/PlayerokHelper/releases/tag/v0.5.6"><img src="https://img.shields.io/badge/Версия-0.5.6-39CDA4" alt="Версия 0.5.6"></a>
+  <a href="https://github.com/renderr03/PlayerokHelper/releases/tag/v0.5.7"><img src="https://img.shields.io/badge/Версия-0.5.7-39CDA4" alt="Версия 0.5.7"></a>
   <a href="https://github.com/renderr03/PlayerokHelper/actions/workflows/tests.yml"><img src="https://github.com/renderr03/PlayerokHelper/actions/workflows/tests.yml/badge.svg" alt="Проверки проекта"></a>
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&amp;logoColor=white" alt="Python 3.11 и новее">
   <img src="https://img.shields.io/badge/Размещение-свой_сервер-39CDA4" alt="Размещение на своём сервере">
@@ -32,6 +32,10 @@
 - **Всё в Telegram.** Настройки, заказы, сообщения покупателям и отчёты в одной панели.
 - **Ваш сервер и ваши настройки.** Токен бота и ключ шифрования хранятся в локальном `.env`; подключения из панели и складские данные — в зашифрованной базе.
 - **Установка одной командой.** Консоль спросит токен и ID администратора, затем настроит запуск в фоне и после перезагрузки.
+
+## 0.5.7: понятные проверки KOSell и тестового лота
+
+Проверка KOSell запрашивает баланс независимо от привязанных лотов и показывает результат или таймаут. Итог теста скрытия остаётся в панели. Статус лота проверяется свежими запросами, незавершённое восстановление сохраняется между перезапусками. Кнопка «Проверить восстановление» не скрывает товар повторно. [Отчёт и порядок восстановления](docs/releases/v0.5.7.md).
 
 ## 0.5.6: оформление и удобная навигация
 
