@@ -27,6 +27,8 @@ def release_summary(body):
         line = raw.strip()
         if not line or re.match(r"^(?:#{1,6}\s|[-*_]{3,}$)", line):
             continue
+        if re.match(r"^(?:(?:Отч[её]т|Подробности|Описание):\s*)?https?://\S+$", line):
+            continue
         line = re.sub(r"!?\[([^\]]+)\]\([^\n)]*\)", r"\1", line)
         line = re.sub(r"^\s*(?:[-*+] |\d+[.)] )", "• ", line)
         line = line.replace("**", "").replace("__", "").replace("`", "")
@@ -149,8 +151,8 @@ class Updates:
         if self.db.get("update_notifications", True):
             self.db.notify(
                 f"🔔 PlayerokHelper {tag}\nУстановлена версия {__version__}.\n\n"
-                f"{cached['body']}\n\nПодробности: {cached['url']}\n\n"
-                "Нажмите «Обновить бота», чтобы посмотреть подробности.",
+                f"{cached['body']}\n\n"
+                "⬆️ Откройте обновление кнопкой ниже. Изменения — в разделе «Что нового».",
                 "release:" + tag,
                 purpose="update",
             )

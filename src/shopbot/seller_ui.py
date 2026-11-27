@@ -611,7 +611,8 @@ class SellerUI:
         elif action == "diagnostics":
             directory = self.updates.directory or self.data_dir
             await message.answer_document(
-                BufferedInputFile(diagnostics(self.db, directory), filename="PlayerokHelper-diagnostics.zip")
+                BufferedInputFile(diagnostics(self.db, directory), filename="PlayerokHelper-diagnostics.zip"),
+                caption="🧰 Диагностика PlayerokHelper\n\nВерсия, состояние магазина и результаты проверки доступа. Токены и переписка в архив не включаются.",
             )
         elif action == "update-status":
             await message.answer(

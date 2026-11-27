@@ -9,6 +9,8 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.methods import EditMessageText, SendDocument, SendMessage
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
+from .ui_style import style_message, styled_keyboard
+
 context = ContextVar("panel_navigation", default=None)
 
 
@@ -52,6 +54,11 @@ class PanelNavigation(BaseMiddleware):
                 )
             )
         )
+        if notification and (anchor is None or anchor.message_id < message.message_id):
+            # An action from a fresh event must open below that event, rather
+            # than editing a much older panel and scrolling the chat backwards.
+            # Repeated clicks reuse the newly created panel below the event.
+            anchor = None
         if (
             isinstance(event, CallbackQuery)
             and not notification
@@ -91,6 +98,8 @@ class PanelNavigation(BaseMiddleware):
 
 class NavigationMessages:
     async def __call__(self, make_request, bot, method):
+        if isinstance(method, (SendMessage, SendDocument)):
+            style_message(method)
         panel = context.get()
         if (
             not panel
@@ -112,11 +121,15 @@ class NavigationMessages:
         elif not callbacks.intersection({"menu:home", "ui:cancel"}):
             rows.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu:home")])
         if rows:
-            method.reply_markup = InlineKeyboardMarkup(inline_keyboard=rows)
+            method.reply_markup = styled_keyboard(InlineKeyboardMarkup(inline_keyboard=rows))
         if current and isinstance(method, SendMessage) and not current.startswith("ConnectionForm:"):
             await state.update_data(
                 _nav_prompt={
                     "text": method.text,
+                    "parse_mode": method.parse_mode if isinstance(method.parse_mode, str) else None,
+                    "entities": [e.model_dump(mode="json") for e in method.entities]
+                    if method.entities
+                    else None,
                     "markup": method.reply_markup.model_dump(mode="json") if method.reply_markup else None,
                 }
             )

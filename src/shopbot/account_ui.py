@@ -115,8 +115,8 @@ class AccountUI:
         profile = self.db.get("profile") or {}
         name = profile.get("username") or "не добавлен"
         await message.answer(
-            f"Подключения магазина\nPlayerok: {name}\n"
-            "Добавьте аккаунт и нужного поставщика. Для своего склада поставщик не нужен.",
+            f"🔌 Подключения магазина\n\n🎮 Playerok: {name}\n\n"
+            "Добавьте нужного поставщика. Для своего склада поставщик не нужен.",
             reply_markup=buttons(
                 [
                     (
@@ -500,7 +500,9 @@ class AccountUI:
     async def connected(self, message):
         profile = self.db.get("profile") or {}
         await message.answer(
-            "Аккаунт Playerok подключён: " + str(profile.get("username") or profile["id"]),
+            "✅ Аккаунт Playerok подключён\n\n👤 "
+            + str(profile.get("username") or profile["id"])
+            + "\n\nМожно продолжить настройку магазина.",
             reply_markup=buttons([("Продолжить настройку", "setup:home"), ("В главное меню", "menu:home")]),
         )
 

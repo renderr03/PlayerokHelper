@@ -32,7 +32,7 @@ async def test_menu_and_forms_reuse_one_panel_message(panel):
     await send(callback="ui:cancel")
     assert session.calls[-1].message_id == anchor.message_id
     assert sum(isinstance(c, SendMessage) for c in session.calls) == 1
-    assert original.text.startswith("PlayerokHelper")
+    assert original.text.startswith("<b>🎮 PlayerokHelper</b>") and original.parse_mode == "HTML"
 
 
 @pytest.mark.parametrize("reason", ["message is not modified", "message to edit not found"])
@@ -121,10 +121,12 @@ async def test_notification_actions_preserve_event_and_use_active_panel(panel, r
         ui.panels.clear()
     await send(callback=callback, source=notification)
     last = session.calls[-1]
-    assert isinstance(last, SendMessage if restart else EditMessageText)
-    if not restart:
-        assert last.message_id == anchor and last.message_id != notification.message_id
+    assert isinstance(last, SendMessage)
     new_anchor = ui.panels[(ui.bot.id, 42, 42)].message_id
+    assert new_anchor > notification.message_id and new_anchor != anchor
+    await send(callback=callback, source=notification)
+    assert isinstance(session.calls[-1], EditMessageText)
+    assert session.calls[-1].message_id == new_anchor
     await send(callback="ui:cancel")
     assert session.calls[-1].message_id == new_anchor
     assert session.messages[notification.message_id].text == notification.text
@@ -264,7 +266,7 @@ async def test_legacy_outbox_notification_is_not_overwritten(panel):
     source = session.messages[int(remote)]
     await send(callback="menu:home", source=source)
     assert isinstance(session.calls[-1], SendMessage)
-    assert session.messages[source.message_id].text == "Legacy event"
+    assert session.messages[source.message_id].text == source.text
 
 
 async def test_not_modified_after_restart_remembers_panel_for_typed_form(panel):

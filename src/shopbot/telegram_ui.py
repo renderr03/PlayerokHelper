@@ -145,32 +145,37 @@ class TelegramUI(AccountUI, ExternalUI, SellerUI):
         await self.expire_logins(message.chat.id)
         self.db.set("update_offer", None)
         status = (
-            "⏸ пауза"
+            "⏸ Приостановлена"
             if self.db.get("paused")
-            else "✅ работает"
+            else "🟢 Работает"
             if self.db.get("live_enabled") and now() - self.db.get("last_poll", 0) < 90
-            else "⚪ нет успешной сверки"
+            else "🟡 Ожидает связи"
+            if self.db.get("live_enabled")
+            else "⚪ Не запущена"
         )
+        shop = (self.db.get("profile") or {}).get("username") or "аккаунт пока не подключён"
         await message.answer(
-            f"PlayerokHelper {__version__}\nДобро пожаловать! Выберите действие.\n"
+            "🎮 PlayerokHelper\n"
+            f"Ваш магазин · {shop}\n\n"
             f"Автоматизация: {status}\n"
-            f"Готовность подключения: {self.readiness_label()}",
-            reply_markup=keyboard(
+            f"🔌 Подключение: {self.readiness_label()}\n\n"
+            f"Версия {__version__} · выберите нужный раздел ↓",
+            reply_markup=card_markup(
                 [
-                    (
-                        "➕ Добавить аккаунт Playerok" if not self.db.get("profile") else "🔌 Подключения",
-                        "connect:playerok" if not self.db.get("profile") else "connect:home",
-                    ),
-                    ("💬 Рабочее окно", "s:inbox:new:0"),
-                    ("🎁 Бонусные товары", "s:loyalty"),
-                    ("🧙 Настроить магазин", "setup:home"),
-                    ("⬆️ Версия и обновления", "updates:home"),
-                    ("⭐ Автонастройки", "menu:auto"),
-                    ("👤 Профиль", "menu:profile"),
-                    ("📈 Аналитика", "menu:analytics"),
-                    ("⚡ Плагины", "menu:plugins"),
-                    ("📍 Управление аккаунтом", "menu:account"),
-                    ("📞 Помощь", "menu:help"),
+                    [
+                        (
+                            "➕ Добавить аккаунт Playerok"
+                            if not self.db.get("profile")
+                            else "🔌 Подключения",
+                            "connect:playerok" if not self.db.get("profile") else "connect:home",
+                        )
+                    ],
+                    [("💬 Рабочее окно", "s:inbox:new:0"), ("📦 Мои лоты", "bindings:all")],
+                    [("⭐ Автонастройки", "menu:auto"), ("⚡ Плагины", "menu:plugins")],
+                    [("📈 Аналитика", "menu:analytics"), ("🎁 Бонусные товары", "s:loyalty")],
+                    [("👤 Профиль", "menu:profile"), ("📍 Управление", "menu:account")],
+                    [("🧙 Настроить магазин", "setup:home"), ("⬆️ Обновления", "updates:home")],
+                    [("📞 Помощь", "menu:help")],
                 ]
             ),
         )
@@ -180,7 +185,7 @@ class TelegramUI(AccountUI, ExternalUI, SellerUI):
         self.db.set("update_offer", None)
         await self.expire_logins(message.chat.id)
         await message.answer(
-            "Ввод отменён.",
+            "↩️ Ввод отменён.\n\nВыберите, куда перейти дальше.",
             reply_markup=keyboard([("🏠 Главное меню", "menu:home"), ("Подключения", "connect:home")]),
         )
 
@@ -191,9 +196,10 @@ class TelegramUI(AccountUI, ExternalUI, SellerUI):
     async def status(self, message, state=None):
         status = self.engine.diagnostic()
         await message.answer(
-            f"Подключение: {self.readiness_label()}\n"
-            f"Пауза: {'да' if status['paused'] else 'нет'}\nЗаказов: {status['orders']}\n"
-            f"Требуют проверки: {status['review']}\nНеопределённые отправки: {status['uncertain']}\n"
+            "📋 Состояние магазина\n\n"
+            f"🔌 Подключение: {self.readiness_label()}\n"
+            f"⏸ Пауза: {'да' if status['paused'] else 'нет'}\n\n🛍 Заказов: {status['orders']}\n"
+            f"⚠️ Требуют проверки: {status['review']}\nНеопределённые отправки: {status['uncertain']}\n"
             f"Внешних заказов в работе: {status['provider_pending']}\nВнешних заказов на сверке: {status['provider_review']}\n"
             f"Последняя успешная сверка: {self.engine.expiry(self.db.get('last_poll'))}"
         )
@@ -246,7 +252,8 @@ class TelegramUI(AccountUI, ExternalUI, SellerUI):
             return "✅" if ok else "⬜"
 
         lines = [
-            f"🧙 Мастер первого запуска · PlayerokHelper {__version__}",
+            "🧙 Мастер первого запуска",
+            "Подготовим магазин к работе — шаг за шагом.\n",
             f"{mark(playerok_ok)} 1. Подключить Playerok",
             f"{mark(source and (source == 'stock' or external_ready or (source == 'kosell' and kosell_ok)))} 2. Источник: "
             + (
@@ -366,15 +373,16 @@ class TelegramUI(AccountUI, ExternalUI, SellerUI):
             await state.clear()
         release = self.updates.available()
         lines = [
-            f"⬆️ PlayerokHelper {__version__}",
-            "Проверка новых стабильных версий — раз в 6 часов.",
+            "⬆️ Обновления PlayerokHelper",
+            f"📦 Установлена версия {__version__}",
+            "🕒 Проверка версий — каждые 6 часов.",
             "Последняя проверка: " + self.engine.expiry(self.db.get("update_check_at")),
         ]
         if self.db.get("update_check_error"):
             lines.append(self.db.get("update_check_error"))
         rows = [("🔄 Проверить сейчас", "updates:check")]
         if release:
-            lines += ["\nДоступна " + release["tag"], release_summary(release["body"]), release["url"]]
+            lines += ["\n✨ Доступна " + release["tag"], "", release_summary(release["body"])]
             if self.updates.enabled() and not self.updates.busy():
                 rows.append(("⬆️ Обновить бота", "updates:offer"))
         else:
@@ -392,7 +400,10 @@ class TelegramUI(AccountUI, ExternalUI, SellerUI):
             )
         if self.updates.busy():
             lines.append("Обновление уже поставлено в очередь или выполняется.")
-        for item in self.db.get("update_history", [])[:5]:
+        history = self.db.get("update_history", [])[:3]
+        if history:
+            lines.append("\n🕘 Последние обновления")
+        for item in history:
             label = {
                 "success": "установлено",
                 "rolled_back": "выполнен откат",
@@ -422,7 +433,10 @@ class TelegramUI(AccountUI, ExternalUI, SellerUI):
             ),
             ("‹ В меню", "menu:home"),
         ]
-        await message.answer("\n".join(lines)[:4000], reply_markup=keyboard(rows))
+        markup = keyboard(rows)
+        if release:
+            markup.inline_keyboard.insert(1, [InlineKeyboardButton(text="📖 Что нового", url=release["url"])])
+        await message.answer("\n".join(lines)[:4000], reply_markup=markup)
 
     async def callback(self, query: CallbackQuery, state: FSMContext):
         await query.answer()
@@ -451,6 +465,8 @@ class TelegramUI(AccountUI, ExternalUI, SellerUI):
                 if prompt:
                     return await message.answer(
                         prompt["text"],
+                        parse_mode=prompt.get("parse_mode"),
+                        entities=prompt.get("entities"),
                         reply_markup=InlineKeyboardMarkup.model_validate(prompt["markup"])
                         if prompt["markup"]
                         else None,
@@ -481,13 +497,16 @@ class TelegramUI(AccountUI, ExternalUI, SellerUI):
             if data == "updates:offer":
                 offer = self.updates.offer()
                 return await message.answer(
-                    f"Установить {offer['tag']}?\nСначала подготовим версию, затем остановим бот и "
-                    "создадим копию базы. При ошибке запуска вернём прежнюю версию и базу. "
-                    "Во время установки заказы и настройки временно недоступны.\n"
-                    "Предложение действует 10 минут.",
+                    f"⬆️ Обновление до {offer['tag']}\n\n"
+                    "📦 Подготовим новую версию.\n"
+                    "🗃 Создадим резервную копию базы.\n"
+                    "🔄 Перезапустим бота и проверим запуск.\n\n"
+                    "При ошибке запуска вернём прежнюю версию и базу. "
+                    "Во время установки заказы и настройки временно недоступны.\n\n"
+                    "⏱ Предложение действует 10 минут.",
                     reply_markup=keyboard(
                         [
-                            ("Установить " + offer["tag"], "updates:install:" + offer["nonce"]),
+                            ("✅ Установить " + offer["tag"], "updates:install:" + offer["nonce"]),
                             ("Отмена", "updates:home"),
                         ]
                     ),
@@ -498,7 +517,8 @@ class TelegramUI(AccountUI, ExternalUI, SellerUI):
                 except ValueError as exc:
                     return await message.answer(str(exc))
                 return await message.answer(
-                    "Обновление поставлено в очередь. Подготовка может занять несколько минут. "
+                    "⏳ Обновление поставлено в очередь\n\n"
+                    "Подготовка может занять несколько минут.\n"
                     "После запуска придёт сообщение с результатом."
                 )
             if data == "menu:home":
@@ -542,7 +562,7 @@ class TelegramUI(AccountUI, ExternalUI, SellerUI):
                 return await self.profile(message)
             if data == "menu:plugins":
                 return await message.answer(
-                    "Плагины",
+                    "⚡ Плагины магазина\n\nВыберите направление и настройте выдачу товаров.",
                     reply_markup=keyboard(
                         [
                             ("🎮 Аренда Steam — KOSell", "plugin:kosell"),
@@ -580,7 +600,7 @@ class TelegramUI(AccountUI, ExternalUI, SellerUI):
                 )
             if data == "menu:account":
                 return await message.answer(
-                    "Управление магазином",
+                    "📍 Управление магазином\n\nЗаказы, подключения и операции, которым нужно ваше внимание.",
                     reply_markup=keyboard(
                         [
                             ("🔌 Подключения", "connect:home"),
@@ -906,17 +926,21 @@ class TelegramUI(AccountUI, ExternalUI, SellerUI):
             ("‹ Назад", "menu:home"),
         ]
         await message.answer(
-            "⭐ Автонастройки\nОбласть: " + (scope or "весь магазин"), reply_markup=keyboard(rows)
+            "⭐ Автонастройки\n\n🎯 Область: "
+            + (scope or "весь магазин")
+            + "\n\nВключайте нужные сценарии и настраивайте тексты ниже.",
+            reply_markup=keyboard(rows),
         )
 
     async def profile(self, message):
         profile = self.db.get("profile", {})
         balance = self.db.get("kosell_balance", {})
         await message.answer(
-            f"Playerok: {profile.get('username', 'не подключён')}\nID: {profile.get('id', '—')}\n"
-            f"Баланс Playerok: {profile.get('balance', {}).get('value', '—')} ₽\n"
-            f"KOSell RUB: {balance.get('balance_rub', '—')}\nKOSell USD: {balance.get('balance_usd', '—')}\n"
-            f"Проверено: {self.engine.expiry(self.db.get('last_profile'))}",
+            "👤 Профиль магазина\n\n"
+            f"🎮 Playerok: {profile.get('username', 'не подключён')}\nID: {profile.get('id', '—')}\n\n"
+            f"💰 Баланс Playerok: {profile.get('balance', {}).get('value', '—')} ₽\n"
+            f"🎮 KOSell · RUB: {balance.get('balance_rub', '—')} · USD: {balance.get('balance_usd', '—')}\n\n"
+            f"🕒 Проверено: {self.engine.expiry(self.db.get('last_profile'))}",
             reply_markup=keyboard([("Статус подключения", "menu:account"), ("‹ Назад", "menu:home")]),
         )
 
@@ -1403,8 +1427,10 @@ class TelegramUI(AccountUI, ExternalUI, SellerUI):
 
     async def help(self, message, state=None):
         await message.answer(
-            "Подключите Playerok в разделе «Подключения», затем выберите источник товаров и привяжите лот в мастере настройки.\n"
-            "Открывайте чаты и отвечайте покупателям через «Рабочее окно». Отчёты доступны в «Аналитике».\n\n"
+            "📖 Помощь по магазину\n\n"
+            "🔌 Подключите Playerok, выберите источник товаров и привяжите лот в мастере настройки.\n\n"
+            "💬 Открывайте чаты и отвечайте покупателям через «Рабочее окно».\n"
+            "📈 Отчёты доступны в «Аналитике».\n\n"
             "Пауза останавливает закупки и выдачу, связанные лоты снимаются с продажи. "
             "Спорные списания и отправки можно сверить в управлении магазином.",
             reply_markup=InlineKeyboardMarkup(
@@ -1472,6 +1498,11 @@ class TelegramUI(AccountUI, ExternalUI, SellerUI):
                 )
                 if purpose == "update":
                     markup = keyboard([("⬆️ Обновить бота", "updates:home")])
+                    release = self.updates.available()
+                    if release:
+                        markup.inline_keyboard.append(
+                            [InlineKeyboardButton(text="📖 Что нового", url=release["url"])]
+                        )
                 result = await self.bot.send_message(int(target), text[:4000], reply_markup=markup)
             return str(result.message_id)
         except TelegramRetryAfter as exc:

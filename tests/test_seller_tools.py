@@ -56,7 +56,7 @@ async def test_bulk_preview_skips_changed_lots_and_cannot_be_replayed(panel):
     report = next(
         call.document
         for call in session.calls
-        if getattr(call, "caption", None) == "Результат по каждому выбранному лоту."
+        if "Результат по каждому выбранному лоту." in (getattr(call, "caption", None) or "")
     )
     assert "A: сохранено" in report.data.decode() and "B: пропущен" in report.data.decode()
     await send(callback=callback)

@@ -88,10 +88,11 @@ async def test_release_notification_uses_short_plain_preview(app, tmp_path):
     updates = Updates(db, tmp_path, transport=transport(body=body))
     release = await updates.check()
     notification = db.decrypt(db.one("SELECT ciphertext FROM outbox WHERE purpose='update'")["ciphertext"])
-    assert release["body"] in notification and release["url"] in notification
+    assert release["body"] in notification and "Что нового" in notification
+    assert "https://" not in notification
     assert "**" not in notification and "##" not in notification and "`" not in notification
     assert notification.startswith("🔔 PlayerokHelper " + TAG)
-    assert len(notification) < 1000 and "Нажмите «Обновить бота»" in notification
+    assert len(notification) < 1000 and "Откройте обновление кнопкой" in notification
 
 
 async def test_check_errors_keep_cache_and_do_not_expose_response(app, tmp_path):

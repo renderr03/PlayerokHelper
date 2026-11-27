@@ -126,13 +126,14 @@ class Analytics:
     def text(self, **filters):
         s = self.summary(**filters)
         return (
-            f"Заказов: {s['orders']}, подтверждено: {s['confirmed']}\n"
-            f"Выручка подтверждённых заказов: {money(s['gross'])}\nВозвраты: {money(s['refunds'])}\n"
-            f"Известная себестоимость: {money(s['cost'])}\nКомиссия: {money(s['commission'])}\n"
+            "📈 Аналитика магазина\n\n"
+            f"🛍 Заказов: {s['orders']}, подтверждено: {s['confirmed']}\n"
+            f"💰 Выручка подтверждённых заказов: {money(s['gross'])}\n↩️ Возвраты: {money(s['refunds'])}\n\n"
+            f"📦 Известная себестоимость: {money(s['cost'])}\nКомиссия: {money(s['commission'])}\n"
             f"Продвижение: {money(s['promotion'])}, резерв: {money(s['reserved'])}\n"
             f"Бонусы: {money(s['bonus_cost'])}; неизвестная стоимость: {s['bonus_unknown']}; спорных отправок: {s['bonus_uncertain']}\n"
             f"Внешние закупки: {s['external_native']}; в процессе / на сверке: {s['external_pending']}\n"
-            f"{'Прибыль' if s['complete'] else 'Предварительный результат'}: {money(s['profit'])}\n"
+            f"\n{'✅ Прибыль' if s['complete'] else '🟡 Предварительный результат'}: {money(s['profit'])}\n"
             f"Себестоимость неизвестна у заказов: {s['unknown_costs']}\n"
             + (
                 "Расчёт полный."
