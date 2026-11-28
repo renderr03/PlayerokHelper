@@ -92,7 +92,7 @@ class SellerUI:
             keyboard.append(("←", f"s:inbox:{view}:{page - 1}"))
         if (page + 1) * 20 < count:
             keyboard.append(("→", f"s:inbox:{view}:{page + 1}"))
-        keyboard += [("✏ Быстрые ответы", "s:quick:edit"), ("‹ В меню", "menu:home")]
+        keyboard += [("‹ Назад", "menu:profile")]
         await message.answer(
             f"💬 Рабочее окно продавца · {count} чатов · страница {page + 1}\n"
             "Отметки просмотра относятся к этой панели. История сохраняется 30 дней.",
@@ -199,9 +199,22 @@ class SellerUI:
                 ("Снять выбор", "s:clear"),
                 ("➕ Привязать лот", "bind:new"),
             ]
+            if not cat["module"]:
+                controls.append(("📋 Шаблоны лотов", "v6:templates"))
+            if cat["module"] == "own_rent":
+                controls.append(("📅 Календарь аренды", "v6:calendar:7:0"))
         elif cat["role"] == "scope":
             controls.append(("Весь магазин", "scope:global"))
-        controls.append(("‹ В меню", "menu:home"))
+        parent = (
+            "menu:analytics"
+            if cat["role"] == "report"
+            else "menu:auto"
+            if cat["role"] == "scope"
+            else "menu:plugins"
+            if cat["module"]
+            else "menu:home"
+        )
+        controls.append(("‹ Назад", parent))
         keyboard += buttons(controls).inline_keyboard
         await message.answer(
             f"📦 Каталог · найдено {count} · страница {cat['page'] + 1}\n"
@@ -345,7 +358,7 @@ class SellerUI:
                     ("Загрузить бонусы", "s:bonus-upload"),
                     ("Инструкция к подарку", "s:bonus-instruction"),
                     ("Спорные подарки", "s:bonus-review:0"),
-                    ("‹ В меню", "menu:home"),
+                    ("‹ Назад", "menu:plugins"),
                 ]
             ),
         )

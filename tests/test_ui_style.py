@@ -71,7 +71,7 @@ async def test_main_menu_is_compact_escaped_and_status_does_not_claim_running(pa
     assert result.parse_mode == "HTML" and "&lt;seller&gt;" in result.text
     assert "⚪ Не запущена" in result.text and "🟢 Работает" not in result.text
     assert len(result.reply_markup.inline_keyboard) <= 8
-    assert any(len(row) == 2 for row in result.reply_markup.inline_keyboard)
+    assert all(len(row) == 1 for row in result.reply_markup.inline_keyboard)
     assert result.link_preview_options.is_disabled
     ui.db.set("live_enabled", True)
     ui.db.set("last_poll", now())

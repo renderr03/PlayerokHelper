@@ -39,6 +39,7 @@ from .presentation import safe as safe_html
 from .rentals import Rentals
 from .seller_ui import MODE_NAMES, SellerUI
 from .shop_ui import ShopForm, ShopUI
+from .ui_routes import parent_route, view_route
 from .ui_texts import issue_text, stage_label
 from .updates import Updates, read_json, release_summary
 from .wallets import balance_text
@@ -165,34 +166,28 @@ class TelegramUI(ShopUI, AccountUI, ExternalUI, SellerUI):
             f"Автоматизация: {status}\n"
             f"🔌 Подключение: {self.readiness_label()}\n\n"
             f"Версия {__version__} · выберите нужный раздел ↓",
-            reply_markup=card_markup(
-                [
-                    [
-                        (
-                            "➕ Добавить аккаунт Playerok"
-                            if not self.db.get("profile")
-                            else "🔌 Подключения",
-                            "connect:playerok" if not self.db.get("profile") else "connect:home",
-                        )
-                    ],
-                    [("💬 Рабочее окно", "s:inbox:new:0"), ("📦 Мои лоты", "bindings:all")],
-                    [("⭐ Автонастройки", "menu:auto"), ("⚡ Плагины", "menu:plugins")],
-                    [("📈 Аналитика", "menu:analytics"), ("🎁 Бонусные товары", "s:loyalty")],
-                    [("👤 Профиль", "menu:profile"), ("📍 Управление", "menu:account")],
-                    [("🧰 Инструменты магазина", "v6:home"), ("⚙️ Настроить магазин", "setup:home")],
-                    [("⬆️ Обновления", "updates:home"), ("📞 Помощь", "menu:help")],
+            reply_markup=keyboard(
+                ([("➕ Добавить аккаунт Playerok", "connect:playerok")] if not self.db.get("profile") else [])
+                + [
+                    ("⭐ Автонастройки", "menu:auto"),
+                    ("📦 Мои лоты", "bindings:all"),
+                    ("👤 Профиль", "menu:profile"),
+                    ("📈 Аналитика", "menu:analytics"),
+                    ("⚡ Плагины", "menu:plugins"),
+                    ("⚙️ Управление магазином", "menu:account"),
+                    ("📞 Поддержка", "menu:help"),
                 ]
             ),
         )
 
     async def cancel(self, message, state):
+        data = await state.get_data()
+        panel = panel_context.get()
+        route = view_route(data.get("_nav_origin", "")) or (panel.parent if panel else "menu:home")
         await state.clear()
         self.db.set("update_offer", None)
         await self.expire_logins(message.chat.id)
-        await message.answer(
-            "↩️ Ввод отменён.\n\nВыберите, куда перейти дальше.",
-            reply_markup=keyboard([("🏠 Главное меню", "menu:home"), ("Подключения", "connect:home")]),
-        )
+        return await self.navigate(message, route, state)
 
     def readiness_label(self):
         value = self.db.get("readiness_status")
@@ -312,7 +307,7 @@ class TelegramUI(ShopUI, AccountUI, ExternalUI, SellerUI):
                     ("Выключить" if self.db.get("alerts_enabled") else "Включить", "alerts:toggle"),
                     ("✏ Порог склада", "alerts:edit:stock_low"),
                     ("✏ Порог аренд", "alerts:edit:rental_low"),
-                    ("‹ Назад", "menu:account"),
+                    ("‹ Назад", "menu:auto"),
                 ]
             ),
         )
@@ -434,7 +429,7 @@ class TelegramUI(ShopUI, AccountUI, ExternalUI, SellerUI):
                 "🔔 Уведомления: " + ("вкл" if self.db.get("update_notifications") else "выкл"),
                 "updates:toggle",
             ),
-            ("‹ В меню", "menu:home"),
+            ("‹ Назад", "menu:account"),
         ]
         markup = keyboard(rows)
         if release:
@@ -443,8 +438,14 @@ class TelegramUI(ShopUI, AccountUI, ExternalUI, SellerUI):
 
     async def callback(self, query: CallbackQuery, state: FSMContext):
         await query.answer()
-        message = query.message
-        data = query.data or ""
+        return await self.navigate(query.message, query.data or "", state)
+
+    async def navigate(self, message, data, state):
+        panel = panel_context.get()
+        route = view_route(data)
+        if panel and route:
+            panel.route, panel.parent = route, parent_route(route)
+            panel.persist()
         if await state.get_state() in {ConnectionForm.cookie.state, ConnectionForm.user_agent.state}:
             await state.clear()
         if data.startswith("card:"):
@@ -470,6 +471,10 @@ class TelegramUI(ShopUI, AccountUI, ExternalUI, SellerUI):
                 await state.set_data({**previous["data"], "_nav_stack": stack})
                 prompt = previous.get("prompt")
                 if prompt:
+                    panel = panel_context.get()
+                    if panel and view_route(prompt.get("route", "")):
+                        panel.route = prompt["route"]
+                        panel.parent = prompt.get("parent", parent_route(panel.route))
                     return await message.answer(
                         prompt["text"],
                         parse_mode=prompt.get("parse_mode"),
@@ -478,7 +483,13 @@ class TelegramUI(ShopUI, AccountUI, ExternalUI, SellerUI):
                         if prompt["markup"]
                         else None,
                     )
-            return await self.cancel(message, state)
+            panel = panel_context.get()
+            route = view_route(context.get("_nav_origin", "")) or (panel.parent if panel else "menu:home")
+            # Older generic Back buttons can outlive the in-memory form.
+            if route == "menu:home" and "правила" in (message.text or "").casefold():
+                route = "auto:replies"
+            await state.clear()
+            return await self.navigate(message, route, state)
         if (await state.get_state() or "").startswith("ConnectionForm:") and not data.startswith("connect:"):
             await self.expire_logins(message.chat.id)
         # Visibility confirmation verifies both the active form and its nonce.
@@ -574,11 +585,11 @@ class TelegramUI(ShopUI, AccountUI, ExternalUI, SellerUI):
                     "⚡ Плагины магазина\n\nВыберите направление и настройте выдачу товаров.",
                     reply_markup=keyboard(
                         [
-                            ("🎮 Аренда Steam — KOSell", "plugin:kosell"),
-                            ("📦 Собственный склад", "plugin:stock"),
+                            ("🎮 Аренда KOSell", "v6:wallet"),
                             ("🎮 Свой пул аренды", "s:own-catalog"),
                             ("Telegram Stars", "x:home:stars"),
                             ("SMM-услуги", "x:home:smm"),
+                            ("🎁 Бонусные товары", "s:loyalty"),
                             ("‹ Назад", "menu:home"),
                         ]
                     ),
@@ -600,12 +611,12 @@ class TelegramUI(ShopUI, AccountUI, ExternalUI, SellerUI):
                     return
                 self.db.set(key, not self.db.get(key))
                 if key == "daily_report":
-                    return await self.analytics_menu(message)
+                    return await self.navigate(message, "analytics:settings", state)
                 if key == "paused":
-                    return await self.account_menu(message)
+                    return await self.navigate(message, "menu:account", state)
                 if key == "paid_enabled":
-                    return await self.promotion_menu(message)
-                return await self.auto_menu(message, state)
+                    return await self.navigate(message, "promotion", state)
+                return await self.navigate(message, "auto:schedule", state)
             if data.startswith("feature:"):
                 key = data.split(":")[1]
                 if key not in LABELS:
@@ -620,15 +631,15 @@ class TelegramUI(ShopUI, AccountUI, ExternalUI, SellerUI):
                     features = self.db.get("features")
                     features[key] = not features[key]
                     self.db.set("features", features)
-                return await self.auto_menu(message, state)
-            if data.startswith("templates"):
-                return await message.answer(
-                    "Выберите текст",
-                    reply_markup=keyboard(
-                        [(label, "text:" + key) for key, label in LABELS.items() if key != "auto_confirm"]
-                        + [("‹ Назад", "menu:auto")]
-                    ),
-                )
+                return await self.navigate(message, "auto:event:" + key, state)
+            if data in {"auto:messages", "auto:replies", "auto:schedule"}:
+                return await self.automation_section(message, state, data.split(":")[1])
+            if data.startswith("auto:event:"):
+                return await self.event_settings(message, state, data.split(":", 2)[2])
+            if data == "templates":
+                return await self.automation_section(message, state, "messages")
+            if data == "analytics:settings":
+                return await self.report_settings(message)
             if data.startswith("text:"):
                 key = data.split(":")[1]
                 if key not in LABELS or key == "auto_confirm":
@@ -908,36 +919,45 @@ class TelegramUI(ShopUI, AccountUI, ExternalUI, SellerUI):
                     ("📊 Выгрузить Excel", "report:all"),
                     ("📦 Товары", "analytics:items"),
                     ("🗓 Фильтр периода", "edit:report_filter"),
-                    (
-                        "✅ Ежедневный отчёт" if self.db.get("daily_report") else "⬜ Ежедневный отчёт",
-                        "toggle:daily_report",
-                    ),
-                    ("🕒 Время ежедневного отчёта", "edit:report_time"),
-                    ("💰 Комиссия Playerok", "edit:fee_percent"),
+                    ("⚙️ Настройки отчёта", "analytics:settings"),
                     ("Загрузить историю", "history:confirm"),
                     ("‹ Назад", "menu:home"),
                 ]
             ),
         )
 
+    async def report_settings(self, message):
+        await message.answer(
+            "⚙️ Настройки отчёта\n\nЕжедневный отчёт: "
+            + ("🟢 включён" if self.db.get("daily_report") else "⚪ выключен")
+            + "\n🕒 Время: "
+            + self.db.get("report_time"),
+            reply_markup=keyboard(
+                [
+                    (
+                        "⏸ Выключить отчёт" if self.db.get("daily_report") else "▶️ Включить отчёт",
+                        "toggle:daily_report",
+                    ),
+                    ("🕒 Время отправки", "edit:report_time"),
+                    ("💰 Комиссия Playerok", "edit:fee_percent"),
+                    ("‹ Назад", "menu:analytics"),
+                ]
+            ),
+        )
+
     async def account_menu(self, message):
         return await message.answer(
-            "📍 Управление магазином\n\nЗаказы, подключения и операции, которым нужно ваше внимание.",
+            "⚙️ Управление магазином\n\nПодключения, состояние бота и обслуживание.",
             reply_markup=keyboard(
                 [
                     ("🔌 Подключения", "connect:home"),
                     ("📋 Статус магазина", "connect:status"),
-                    ("📦 Привязанные лоты", "bindings:all"),
-                    ("🧾 Последние заказы", "orders:0"),
-                    ("🔔 Центр событий", "menu:attention"),
-                    ("✉️ Доставка сообщений", "uncertain:list"),
-                    ("💳 Учёт списаний", "expenses:list"),
                     (
-                        "▶ Возобновить" if self.db.get("paused") else "⏸ Пауза и скрытие лотов",
+                        "▶️ Возобновить магазин" if self.db.get("paused") else "⏸ Приостановить магазин",
                         "toggle:paused",
                     ),
-                    ("🗃 Создать резервную копию", "backup"),
-                    ("🚨 Ранние предупреждения", "alerts:home"),
+                    ("⬆️ Обновления", "updates:home"),
+                    ("🗃 Резервная копия", "backup"),
                     ("‹ Назад", "menu:home"),
                 ]
             ),
@@ -953,7 +973,6 @@ class TelegramUI(ShopUI, AccountUI, ExternalUI, SellerUI):
                     ("Включить / выключить платные действия", "toggle:paid_enabled"),
                     ("Лимит операции", "edit:action_limit"),
                     ("Суточный бюджет", "edit:daily_budget"),
-                    ("Настроить лоты", "bindings:all"),
                     ("‹ Назад", "menu:auto"),
                 ]
             ),
@@ -984,34 +1003,84 @@ class TelegramUI(ShopUI, AccountUI, ExternalUI, SellerUI):
                     ("💳 Учёт списаний", "expenses:list"),
                     ("⭐ Заказы Stars", "x:orders:stars:0"),
                     ("💜 Заказы SMM", "x:orders:smm:0"),
-                    ("‹ Управление", "menu:account"),
+                    ("‹ Назад", "menu:profile"),
                 ]
             ),
         )
 
     async def auto_menu(self, message, state):
         scope = (await state.get_data()).get("scope")
-        rows = [
-            (("✅ " if self.db.feature(key, scope) else "⬜ ") + label, "feature:" + key)
-            for key, label in LABELS.items()
-        ]
-        rows += [
-            ("🚨 Ранние предупреждения", "alerts:home"),
-            ("📦 Автовыдача", "menu:plugins"),
-            ("✏ Тексты сообщений", "templates"),
-            ("🤖 Правила автоответчика", "edit:rules"),
-            ("🚀 Поднятие и выставление", "promotion"),
-            ("🕒 Рабочие часы", "edit:work_hours"),
-            ("💤 Ручной режим вне сети", "toggle:offline_override"),
-            ("🎯 Область настроек", "scopes"),
-            ("‹ Назад", "menu:home"),
-        ]
         await message.answer(
-            "⭐ Автонастройки\n\n🎯 Область: "
-            + (scope or "весь магазин")
-            + "\n\nВключайте нужные сценарии и настраивайте тексты ниже.",
-            reply_markup=keyboard(rows),
+            "⭐ Автонастройки\n\nВыберите раздел настроек.\n🎯 Область: " + (scope or "весь магазин"),
+            reply_markup=keyboard(
+                [
+                    ("💬 Сообщения покупателям", "auto:messages"),
+                    ("🤖 Автоответчик", "auto:replies"),
+                    ("🕒 Режим работы", "auto:schedule"),
+                    ("🚀 Продвижение лотов", "promotion"),
+                    ("🔔 Уведомления магазина", "alerts:home"),
+                    ("🎯 Область настроек", "scopes"),
+                    ("‹ Назад", "menu:home"),
+                ]
+            ),
         )
+
+    async def automation_section(self, message, state, section):
+        if section == "messages":
+            await message.answer(
+                "💬 Сообщения покупателям\n\nОткройте событие: внутри — включение и текст сообщения.",
+                reply_markup=keyboard(
+                    [(label, "auto:event:" + key) for key, label in LABELS.items()]
+                    + [("‹ Назад", "menu:auto")]
+                ),
+            )
+        elif section == "replies":
+            await message.answer(
+                "🤖 Автоответчик\n\nНастройте ответы на вопросы и условия отправки.",
+                reply_markup=keyboard(
+                    [
+                        ("💬 Ответы по ключевым словам", "edit:rules"),
+                        ("🧩 Сценарии общения", "v6:rules"),
+                        ("⚡ Заготовки быстрых ответов", "s:quick:edit"),
+                        ("‹ Назад", "menu:auto"),
+                    ]
+                ),
+            )
+        elif section == "schedule":
+            await message.answer(
+                f"🕒 Режим работы\n\nЧасы магазина: {self.db.get('work_start'):02d}:00–{self.db.get('work_end'):02d}:00\nРежим вне сети: {'включён' if self.db.get('offline_override') else 'выключен'}",
+                reply_markup=keyboard(
+                    [
+                        ("🕒 Изменить часы", "edit:work_hours"),
+                        (
+                            "🟢 Вернуться в сеть"
+                            if self.db.get("offline_override")
+                            else "💤 Включить режим вне сети",
+                            "toggle:offline_override",
+                        ),
+                        ("‹ Назад", "menu:auto"),
+                    ]
+                ),
+            )
+
+    async def event_settings(self, message, state, key):
+        if key not in LABELS:
+            raise ValueError()
+        scope = (await state.get_data()).get("scope")
+        enabled = self.db.feature(key, scope)
+        text = LABELS[key] + "\n\nСостояние: " + ("🟢 включено" if enabled else "⚪ выключено")
+        keys = [("⏸ Выключить" if enabled else "▶️ Включить", "feature:" + key)]
+        if key != "auto_confirm":
+            template = (
+                self.db.get("override:" + (scope or ""), {})
+                .get("templates", {})
+                .get(key, self.db.get("templates").get(key, ""))
+            )
+            text += "\n\n📝 Текст сообщения:\n" + (template or "ещё не задан")
+            keys.append(("✏️ Изменить текст", "text:" + key))
+        else:
+            text += "\n\nПосле успешной выдачи бот отмечает выполнение заказа на Playerok."
+        await message.answer(text, reply_markup=keyboard(keys + [("‹ Назад", "auto:messages")]))
 
     async def profile(self, message):
         profile = self.db.get("profile", {})
@@ -1022,7 +1091,15 @@ class TelegramUI(ShopUI, AccountUI, ExternalUI, SellerUI):
             f"💰 Баланс Playerok: {profile.get('balance', {}).get('value', '—')} ₽\n"
             f"🎮 KOSell · RUB: {balance.get('balance_rub', '—')} · USD: {balance.get('balance_usd', '—')}\n\n"
             f"🕒 Проверено: {self.engine.expiry(self.db.get('last_profile'))}",
-            reply_markup=keyboard([("Статус подключения", "menu:account"), ("‹ Назад", "menu:home")]),
+            reply_markup=keyboard(
+                [
+                    ("💬 Чаты и заказы", "s:inbox:new:0"),
+                    ("🧾 Все заказы", "orders:0"),
+                    ("👥 Мои покупатели", "v6:customers:0"),
+                    ("🔔 Центр событий", "menu:attention"),
+                    ("‹ Назад", "menu:home"),
+                ]
+            ),
         )
 
     async def bindings_menu(self, message, module=None, state=None):
@@ -1363,7 +1440,10 @@ class TelegramUI(ShopUI, AccountUI, ExternalUI, SellerUI):
                 raise ValueError()
             self.db.audit("settings_changed", key)
             await state.set_state(None)
-            await message.answer("Сохранено.")
+            origin = view_route(context.get("_nav_origin", ""))
+            if origin:
+                return await self.navigate(message, origin, state)
+            await message.answer("✅ Сохранено.")
         except (ValueError, KeyError, ArithmeticError):
             await message.answer("Некорректное значение. Попробуйте снова или нажмите «Отменить».")
         except ServiceError as exc:
@@ -1450,7 +1530,7 @@ class TelegramUI(ShopUI, AccountUI, ExternalUI, SellerUI):
                 ]
                 + ([("← Назад", f"{prefix}{page - 1}")] if page else [])
                 + ([("Далее →", f"{prefix}{page + 1}")] if (page + 1) * 10 < count else [])
-                + [("‹ В меню", "menu:account")]
+                + [("‹ Назад", "menu:profile")]
             ),
         )
 
@@ -1574,23 +1654,21 @@ class TelegramUI(ShopUI, AccountUI, ExternalUI, SellerUI):
 
     async def help(self, message, state=None):
         await message.answer(
-            "📖 Помощь по магазину\n\n"
-            "🔌 Подключите Playerok, выберите источник товаров и привяжите лот в мастере настройки.\n\n"
-            "💬 Открывайте чаты и отвечайте покупателям через «Рабочее окно».\n"
-            "📈 Отчёты доступны в «Аналитике».\n\n"
-            "Пауза останавливает закупки и выдачу, связанные лоты снимаются с продажи. "
-            "Спорные списания и отправки можно сверить в управлении магазином.",
+            "📞 Поддержка PlayerokHelper\n\n📖 Инструкции по подключению и работе — в документации.\n\n💬 Нашли ошибку или хотите предложить улучшение? Откройте обращение на GitHub. Для разбора можно приложить диагностику из раздела обновлений.",
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[
-                    [InlineKeyboardButton(text="Подключить аккаунт", callback_data="connect:home")],
-                    [InlineKeyboardButton(text="Настроить магазин", callback_data="setup:home")],
                     [
                         InlineKeyboardButton(
-                            text="Инструкция на GitHub",
-                            url="https://github.com/renderr03/PlayerokHelper#readme",
+                            text="📖 Документация", url="https://github.com/renderr03/PlayerokHelper#readme"
                         )
                     ],
-                    [InlineKeyboardButton(text="‹ Главное меню", callback_data="menu:home")],
+                    [
+                        InlineKeyboardButton(
+                            text="💬 Сообщить о проблеме",
+                            url="https://github.com/renderr03/PlayerokHelper/issues",
+                        )
+                    ],
+                    [InlineKeyboardButton(text="‹ Назад", callback_data="menu:home")],
                 ]
             ),
         )

@@ -33,6 +33,11 @@ def assert_panel(result):
     assert "/cancel" not in text and "systemctl" not in text and ".venv/" not in text
     assert result.parse_mode == "HTML"
     if result.reply_markup:
+        actions = [
+            b.callback_data for row in result.reply_markup.inline_keyboard for b in row if b.callback_data
+        ]
+        assert len(actions) == len(set(actions))
+        assert sum(b.text.startswith("‹") for row in result.reply_markup.inline_keyboard for b in row) <= 1
         for row in result.reply_markup.inline_keyboard:
             for button in row:
                 assert button.text
@@ -126,6 +131,7 @@ async def test_button_walk_configured_shop(panel, tmp_path):
     }
     prefixes = (
         "menu:",
+        "auto:",
         "setup:",
         "plugin:",
         "connect:key:",
@@ -201,6 +207,7 @@ async def test_button_walk_configured_shop(panel, tmp_path):
         "v6:tag:",
         "v6:ruletest:",
         "reportitem:",
+        "analytics:settings",
     )
     queue, seen, opened = deque([()]), set(), set()
     while queue:
@@ -251,7 +258,7 @@ async def test_switch_keeps_settings_and_panel(panel, action, menu):
     result = screens(session.calls)[-1]
     assert ui.db.get(action) is not bool(before)
     assert isinstance(result, EditMessageText) and result.message_id == anchor
-    assert len(callbacks(result)) > 3
+    assert len(callbacks(result)) >= 3
 
 
 async def test_first_form_back_restores_parent_and_second_step_back_restores_prompt(panel):

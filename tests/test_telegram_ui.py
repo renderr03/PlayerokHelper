@@ -59,6 +59,7 @@ async def panel(app, tmp_path):
     # UI tests never contact real suppliers, even when a key form auto-connects.
     ui.engine.external.transport = httpx.MockTransport(lambda request: httpx.Response(503))
     dp = dispatcher(ui)
+    send_state = dp.fsm.get_context(bot=bot, chat_id=42, user_id=42)
     counter = 0
 
     async def send(text=None, callback=None, user=42, chat_type="private", source=None):
@@ -91,6 +92,7 @@ async def panel(app, tmp_path):
             update = Update(update_id=counter, message=message)
         await asyncio.wait_for(dp.feed_update(bot, update), timeout=3)
 
+    send.fsm = send_state
     yield ui, session, send
     await dp.storage.close()
     await bot.session.close()

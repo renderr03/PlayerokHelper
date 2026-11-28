@@ -129,23 +129,8 @@ class ShopUI:
         )
 
     async def shop_home(self, message, state):
-        await message.answer(
-            "🧰 Инструменты магазина\n\nНастройка товаров, покупатели и расчёты — в одной панели.",
-            reply_markup=buttons(
-                [
-                    ("🛍 Добавить товар", "bind:new"),
-                    ("📋 Шаблоны", "v6:templates"),
-                    ("🧩 Сценарии общения", "v6:rules"),
-                    ("👤 Покупатели", "v6:customers:0"),
-                    ("💰 Расчёт цены", "v6:prices:0"),
-                    ("📅 Календарь аренды", "v6:calendar:7:0"),
-                    ("⭐ Stars и SMM", "v6:external"),
-                    ("📊 Итоги и графики", "v6:stats:7"),
-                    ("💱 Кошельки KOSell", "v6:wallet"),
-                    ("🏠 Главное меню", "menu:home"),
-                ]
-            ),
-        )
+        # Legacy tool hub buttons keep working through the canonical main menu.
+        return await self.start(message, state)
 
     async def template_menu(self, message, state, page=0):
         rows = self.db.all("SELECT id,name FROM shop_templates ORDER BY created_at DESC")

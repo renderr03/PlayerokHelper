@@ -141,8 +141,7 @@ class AccountUI:
                     ("🎮 Подключить KOSell", "connect:key:kosell"),
                     ("⭐ Подключить Split", "connect:key:split"),
                     ("Подключить SMM-панель", "connect:smm"),
-                    ("⚙️ Настроить товары", "setup:home"),
-                    ("‹ Главное меню", "menu:home"),
+                    ("‹ Назад", "menu:account"),
                 ]
             ),
         )

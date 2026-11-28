@@ -104,6 +104,8 @@ def styled_keyboard(markup):
                 button.style = "danger"
             elif action.startswith("x:confirm:"):
                 button.style = "primary"
+            elif button.text.startswith("‹"):
+                button.style = "primary"
             elif action in {
                 "connect:playerok",
                 "connect:home",
