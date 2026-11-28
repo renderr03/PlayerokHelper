@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 
 from .models import ServiceError, money, now, rub, timestamp
+from .ui_texts import issue_text
 from .wallets import affordable, balance_text, wallet
 
 CONNECTION_TIMEOUT = 15
@@ -128,15 +130,17 @@ class Preview:
     def text(self, expiry):
         return "\n".join(
             [
-                "🧪 Проверка без покупки",
-                "Проверено: " + expiry(self.checked_at),
-                "Результат: " + ("есть ограничения / нет данных" if self.issues else "проверки пройдены"),
+                "👁 Предпросмотр выдачи",
+                "🕒 Обновлено: " + expiry(self.checked_at),
+                "Результат: " + ("⏸ выдача пока недоступна" if self.issues else "✅ готов к выдаче"),
                 *self.observations,
-                *["⚠️ " + issue for issue in self.issues],
-                "\nПример сообщения (заменители реквизитов):",
+                *[
+                    "⚠️ " + (issue_text(issue) if re.fullmatch(r"[a-z][a-z0-9_]+", issue) else issue)
+                    for issue in self.issues
+                ],
+                "\n💬 Сообщение покупателю (образец):",
                 self.sample,
-                "\nПроверка не резервирует товар, не закупает и не отправляет его. "
-                "Перед реальной выдачей проверки выполняются заново.",
+                "\nℹ️ Это предпросмотр. Закупки, резерв и отправка покупателю не выполнялись.",
             ]
         )
 

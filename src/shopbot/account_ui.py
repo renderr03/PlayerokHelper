@@ -56,11 +56,11 @@ def connection_error_text(error, *, playerok=True):
             return "KOSell не принял API-ключ. Проверьте его в кабинете поставщика."
         if error.code == "kosell_rate_limit":
             return "KOSell ограничил частоту запросов. Подождите и повторите проверку."
-        return "Поставщик не подтвердил подключение. Проверьте его доступность и API-ключ в кабинете."
+        return "Не удалось подключиться к поставщику. Откройте его кабинет и убедитесь, что ключ активен."
     messages = {
-        "playerok_auth_required": "Playerok не подтвердил сессию. Она могла истечь или быть отозвана. Войдите на сайте и получите новый токен.",
-        "playerok_http_401": "Playerok не подтвердил сессию (HTTP 401). Она могла истечь или быть отозвана. Войдите на сайте и получите новый токен.",
-        "playerok_security_check": "Сервер получил страницу проверки или защиты Playerok (HTTP 403). Профиль аккаунта пока не подтверждён. Откройте проверку доступа ниже и инструкцию. Автоматическое прохождение этой страницы не выполняется.",
+        "playerok_auth_required": "Сессия Playerok больше не действует. Войдите на сайте и получите новый токен.",
+        "playerok_http_401": "Сессия Playerok больше не действует (HTTP 401). Войдите на сайте и получите новый токен.",
+        "playerok_security_check": "Сервер получил страницу проверки или защиты Playerok (HTTP 403). Подключиться к аккаунту пока не удалось. Откройте проверку доступа ниже и инструкцию. Автоматическое прохождение этой страницы не выполняется.",
         "playerok_http_403": "Playerok отклонил запрос с сервера (HTTP 403). Это не доказывает, что токен введён неверно. Проверьте доступ к сайту с сервера; может потребоваться полный Cookie и User-Agent вашей сессии.",
         "playerok_access_denied": "Playerok запретил доступ к профилю этой сессии. Проверьте доступ к аккаунту на сайте.",
         "playerok_query_rejected": "Playerok отклонил формат запроса профиля. Это ошибка совместимости API, а не доказательство неверного токена. Проверьте обновление бота.",
@@ -79,10 +79,10 @@ def connection_error_text(error, *, playerok=True):
         return messages[error.code]
     match = re.fullmatch(r"playerok_http_([45][0-9]{2})", error.code)
     if match:
-        return "Playerok вернул HTTP " + match[1] + ". Подключение пока не подтверждено. Попробуйте позже."
+        return "Playerok вернул HTTP " + match[1] + ". Подключение сейчас недоступно. Попробуйте позже."
     if error.code.startswith("playerok_login_"):
-        return "Вход по почте не подтверждён. Проверьте код. Если сайт требует проверку браузера или второй фактор, войдите на сайте и используйте токен."
-    return "Подключение Playerok не подтверждено. Проверьте доступ к аккаунту на сайте и повторите попытку."
+        return "Не удалось войти по почте. Введите актуальный код. Если сайт требует проверку браузера или второй фактор, войдите на сайте и используйте токен."
+    return "Не удалось подключиться к Playerok. Войдите в аккаунт на сайте и повторите попытку."
 
 
 def lot_error_text(error):
@@ -269,7 +269,7 @@ class AccountUI:
         elif data.startswith("connect:key:"):
             preset = data.split(":")[2]
             if preset not in {*PRESETS, "kosell"}:
-                return True
+                raise ValueError("Поставщик больше не доступен")
             await state.clear()
             await state.set_state(ConnectionForm.key)
             await state.update_data(preset=preset)
@@ -293,6 +293,8 @@ class AccountUI:
                     [("⚙️ Настроить товары", "setup:home"), ("🏠 Главное меню", "menu:home")]
                 ),
             )
+        else:
+            raise ValueError("Экран подключения больше не доступен")
         return True
 
     async def connection_input(self, message, state):
@@ -422,15 +424,22 @@ class AccountUI:
                     else:
                         provider_id = self.db.one("SELECT id FROM providers WHERE preset=?", (preset,))["id"]
                         summary = "Ключ сохранён. Выберите товар и настройте поставщика."
-                        if preset == "vingboost":
-                            await message.answer("⏳ Подключаю VingBoost…")
+                        if preset in PRESETS:
+                            await message.answer("⏳ Подключаю " + PRESETS[preset][2] + "…")
                             try:
                                 async with asyncio.timeout(CHECK_TIMEOUT):
                                     balances, catalog = await self.engine.external.check(provider_id)
                                 summary = (
-                                    "✅ VingBoost подключён\n\n💰 Баланс: "
+                                    "✅ "
+                                    + PRESETS[preset][2]
+                                    + " подключён\n\n💰 Баланс: "
                                     + ", ".join(f"{v} {k}" for k, v in balances.items())
-                                    + f"\nПоддерживаемых услуг: {len(catalog)}.\n\nНастройте лот, лимиты и включите поставщика. Закупки пока выключены."
+                                    + (
+                                        "\n⭐ Telegram Stars"
+                                        if preset == "split"
+                                        else f"\nПоддерживаемых услуг: {len(catalog)}."
+                                    )
+                                    + "\n\nНастройте лот, лимиты и включите поставщика. Закупки пока выключены."
                                 )
                             except (
                                 ServiceError,
@@ -440,7 +449,11 @@ class AccountUI:
                                 TypeError,
                                 ArithmeticError,
                             ):
-                                summary = "⚠️ Ключ VingBoost сохранён, но подключение не подтверждено. Проверьте ключ и активность аккаунта в кабинете поставщика. Закупки выключены; повторная проверка доступна в настройках поставщика."
+                                summary = (
+                                    "⚠️ Ключ "
+                                    + PRESETS[preset][2]
+                                    + " сохранён. Подключиться сейчас не удалось. Откройте кабинет поставщика: ключ должен быть активен. Закупки выключены; повторная загрузка доступна в настройках поставщика."
+                                )
                         await message.answer(
                             summary,
                             reply_markup=buttons(
@@ -540,7 +553,7 @@ class AccountUI:
         await message.answer(
             "✅ Playerok подключён\n\n👤 "
             + str(profile.get("username") or profile["id"])
-            + "\n\nДоступ подтверждён автоматически. "
+            + "\n\nАккаунт подключён. "
             + ("Настройте товары для выдачи." if has_kosell else "Добавьте KOSell или выберите свой склад."),
             reply_markup=buttons(rows),
         )
@@ -755,13 +768,13 @@ class AccountUI:
     def visibility_failure_text(self):
         if self.db.get("visibility_test_pending"):
             return (
-                "⚠️ Восстановление лота не подтверждено\n\n"
+                "🛠 Лот пока не восстановлен\n\n"
                 "Этот лот временно исключён из автоматизации. Остальные лоты продолжают работать. "
                 "Откройте лот в Playerok и восстановите продажу, "
                 "если он скрыт. Затем нажмите «Проверить восстановление». "
                 "Эта кнопка не снимает лот с продажи повторно."
             )
-        return "⚠️ Проверка не пройдена. Автоматизация пока отключена. Проверьте статус лота в Playerok и попробуйте позже."
+        return "🛠 Не удалось восстановить продажу. Откройте лот в Playerok и включите продажу."
 
     async def visibility_item(self, market, item_id):
         method = getattr(market, "visibility_item", market.item)

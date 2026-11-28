@@ -9,6 +9,7 @@ from .checks import recovery_item
 from .engine import Engine
 from .margins import record
 from .models import ServiceError, money, now, rub
+from .ui_texts import issue_text
 from .wallets import number, wallet
 
 
@@ -139,7 +140,10 @@ class Listings:
                             await self.engine.market.set_visible(item_id, False)
                             self.db.execute("UPDATE bindings SET hidden_by_bot=1 WHERE item_id=?", (item_id,))
                             self.db.set("visibility_intent:" + item_id, None)
-                            self.db.notify(f"Лот {item_id} скрыт: {reason}", f"hide:{item_id}:{reason}")
+                            self.db.notify(
+                                f"📦 Продажа лота приостановлена\n\nЛот: {item_id}\n{issue_text(reason)}",
+                                f"hide:{item_id}:{reason}",
+                            )
                         elif self.db.get("visibility_intent:" + item_id) == "hide":
                             hidden = self.engine.market.visibility["hide"]["hidden_statuses"]
                             if item["status"] in hidden:
@@ -168,7 +172,7 @@ class Listings:
                             await self.action(binding, item, "bump")
                 except ServiceError as exc:
                     self.db.notify(
-                        f"Лот {item_id}: операция не выполнена ({exc.code}). Проверьте доступность.",
+                        f"📦 Лот: {item_id}\n\n{issue_text(exc.code)}",
                         f"listing_error:{item_id}:{exc.code}:{int(now() // 3600)}",
                     )
 

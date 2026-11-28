@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime, timezone
 
+import httpx
 import pytest
 from aiogram import Bot
 from aiogram.client.session.base import BaseSession
@@ -55,6 +56,8 @@ async def panel(app, tmp_path):
     session = CaptureSession()
     bot = Bot("123456789:fake_bot_token_for_tests_only", session=session)
     ui = TelegramUI(bot, engine, [42], tmp_path, project_dir=tmp_path)
+    # UI tests never contact real suppliers, even when a key form auto-connects.
+    ui.engine.external.transport = httpx.MockTransport(lambda request: httpx.Response(503))
     dp = dispatcher(ui)
     counter = 0
 
@@ -178,7 +181,7 @@ async def test_setup_wizard_stock_preview_and_auth(panel):
     await send(callback="preview:lot:item1", user=999)
     assert ui.db.get("last_preview") is None
     await send(callback="preview:lot:item1")
-    assert "проверки пройдены" in session.calls[-1].text
+    assert "готов к выдаче" in session.calls[-1].text
     assert "do-not-show-this-password" not in session.calls[-1].text
     assert ui.db.one("SELECT state FROM stock")["state"] == "free"
     ui.db.set("last_preview", None)
@@ -236,7 +239,7 @@ async def test_extension_preview_selects_existing_rental_and_revalidates(panel):
     callback = session.calls[-1].reply_markup.inline_keyboard[0][0].callback_data
     assert callback.startswith("preview:extend:") and len(callback.encode()) <= 64
     await send(callback=callback)
-    assert "проверки пройдены" in session.calls[-1].text
+    assert "готов к выдаче" in session.calls[-1].text
     ui.engine.update("order1", expires_at=now() - 1)
     await send(callback=callback)
     assert "действующую аренду" in session.calls[-1].text
@@ -635,7 +638,7 @@ async def test_token_connection_succeeds_after_realistic_playerok_cache_500(pane
     [
         ("playerok_http_403", "HTTP 403"),
         ("playerok_http_500", "HTTP 500"),
-        ("playerok_auth_required", "сессию"),
+        ("playerok_auth_required", "Сессия"),
         ("playerok_network", "связаться"),
         ("playerok_query_rejected", "формат запроса"),
     ],

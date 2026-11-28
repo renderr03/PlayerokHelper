@@ -257,6 +257,6 @@ async def test_vingboost_failed_automatic_check_preserves_disabled_key_without_l
     await send("private-vingboost-key")
     row = ui.db.one("SELECT * FROM providers WHERE preset='vingboost'")
     assert row and not row["enabled"] and row["checked_revision"] != row["revision"]
-    assert "не подтверждено" in session.calls[-1].text
+    assert "Подключиться сейчас не удалось" in session.calls[-1].text
     assert "private-vingboost-key" not in session.calls[-1].text
     assert len(calls) == 1 and form(calls[0])["action"] == "balance"

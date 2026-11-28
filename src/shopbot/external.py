@@ -14,6 +14,7 @@ from urllib.parse import urlsplit, urlunsplit
 from .alerts import Alerts
 from .models import ServiceError, now
 from .providers import PRESETS, ProviderClient, amount
+from .ui_texts import issue_text
 
 MODES = {"stars", "smm"}
 UNSETTLED = {"creating", "processing", "review", "partial"}
@@ -367,7 +368,7 @@ class External:
             )
             if not row:
                 return "Заказ не найден. Укажите: !заказ НОМЕР"
-            return f"Заказ {row['id']}: {STATE_NAMES.get(row['state'], 'требуется проверка')}." + (
+            return f"Заказ {row['id']}: {STATE_NAMES.get(row['state'], 'обработка приостановлена')}." + (
                 f" Осталось выполнить: {row['remains']}." if row["remains"] is not None else ""
             )
         explicit = command == "!получатель"
@@ -483,7 +484,7 @@ class External:
         self.engine.update(row["order_id"], stage="external_wait")
         order = self.engine.order(row["order_id"])
         self.db.notify(
-            f"Заказ {order['id']}: закупка не запущена ({reason}). Проверьте настройки, баланс и лимиты.",
+            f"⏸ Закупка не запущена\n\n🧾 Заказ: {order['id']}\n{issue_text(reason)}",
             "provider-preflight:" + order["id"] + ":" + reason,
             order["id"],
         )
@@ -586,7 +587,7 @@ class External:
             self.engine.accept(await self.engine.market.deal(order_id))
         except ServiceError:
             self.db.notify(
-                "Результат возврата требует проверки: " + order_id,
+                "↩️ Playerok не вернул результат возврата. Откройте заказ: " + order_id,
                 "provider-refund-review:" + order_id,
                 order_id,
             )
@@ -628,7 +629,7 @@ class External:
                 await self.check(provider["id"])
             except (ServiceError, KeyError, ValueError, TypeError, ArithmeticError):
                 self.db.notify(
-                    "Подключение поставщика требует проверки: " + provider["title"],
+                    "🔌 Поставщик временно недоступен. Откройте подключение: " + provider["title"],
                     f"provider-offline:{provider['id']}:{int(now() // 3600)}",
                 )
 
@@ -729,8 +730,8 @@ STATE_NAMES = {
     "creating": "отправляется поставщику",
     "processing": "выполняется",
     "completed": "выполнен",
-    "partial": "выполнен частично, проверяет продавец",
+    "partial": "выполнен частично",
     "rejected": "отменён без выполнения",
-    "review": "на сверке",
+    "review": "обработка приостановлена",
     "closed": "сверка завершена продавцом",
 }

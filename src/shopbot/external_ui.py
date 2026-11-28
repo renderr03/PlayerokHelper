@@ -10,6 +10,7 @@ from .external import STATE_NAMES, encoded
 from .models import ServiceError, money, now, rub
 from .providers import PRESETS, amount, currency
 from .seller_ui import buttons
+from .ui_texts import issue_text
 
 
 class ExternalUI:
@@ -58,24 +59,24 @@ class ExternalUI:
             if PRESETS[r["preset"]][0] == kind
         ]
         keys += [
-            ("Подключить поставщика", "x:help:" + mode),
-            ("Лоты", "x:catalog:" + mode),
-            ("Привязать лот", "x:new:" + mode),
-            ("Заказы и сверка", "x:orders:" + mode + ":0"),
+            ("➕ Подключить поставщика", "x:help:" + mode),
+            ("📦 Мои лоты", "x:catalog:" + mode),
+            ("🛍 Добавить лот", "x:new:" + mode),
+            ("🧾 Заказы", "x:orders:" + mode + ":0"),
             ("‹ Плагины", "menu:plugins"),
         ]
         await message.answer(
             ("Telegram Stars" if mode == "stars" else "SMM-услуги")
-            + "\nПолучатель подтверждается покупателем. Закупка начинается только после проверки оплаты и лимитов.",
+            + "\n\n✨ Автовыдача после оплаты на Playerok.\n👤 Покупатель указывает получателя.\n💰 Закупки выполняются в пределах ваших лимитов.",
             reply_markup=buttons(keys),
         )
 
-    async def provider_card(self, message, pid):
+    async def provider_card(self, message, pid, notice=None):
         provider = self.engine.external.provider(pid)
         settings = self.engine.external.settings(provider)
         balances = self.db.get("provider_balance:" + str(pid), {})
         keys = [
-            ("Проверить подключение", f"x:check:{pid}"),
+            ("🔄 Обновить баланс и каталог", f"x:check:{pid}"),
             ("Остановить" if provider["enabled"] else "Запустить", f"x:toggle:{pid}"),
             (
                 "Подтверждение получателя: " + ("вкл" if settings["confirm"] else "выкл"),
@@ -99,17 +100,18 @@ class ExternalUI:
             + "\n"
             + ("Включён" if provider["enabled"] else "Выключен")
             + (
-                "\nНовые закупки заблокированы: проверьте подключение и заказы на сверке."
+                "\n⏸ Новые закупки приостановлены. Обновите подключение и откройте незавершённые заказы."
                 if provider["enabled"] and not self.engine.external.enabled(provider)
                 else ""
             )
             + "\nБаланс: "
-            + (", ".join(f"{v} {k}" for k, v in balances.items()) or "не проверен")
-            + "\nПроверено: "
+            + (", ".join(f"{v} {k}" for k, v in balances.items()) or "ещё не загружен")
+            + "\n🕒 Обновлено: "
             + self.engine.expiry(provider["checked_at"])
             + "\nКурс учёта: "
             + (rates or "не задан")
-            + "\nАвтовозврат действует только при подтверждённой отмене SMM без выполнения и без затрат. Частичные и неопределённые заказы требуют сверки.",
+            + "\n\n↩️ Автовозврат SMM — после отмены без выполнения и затрат. Частично выполненные заказы остаются в отдельном разделе."
+            + ("\n\n" + notice if notice else ""),
             reply_markup=buttons(keys),
         )
 
@@ -119,7 +121,7 @@ class ExternalUI:
         rid = self.db.one("SELECT rowid rid FROM bindings WHERE item_id=?", (item_id,))["rid"]
         keys = [
             ("Снять паузу" if binding["paused"] else "Пауза", "lotflag:paused:" + item_id),
-            ("Проверить сценарий", "preview:lot:" + item_id),
+            ("👁 Предпросмотр выдачи", "preview:lot:" + item_id),
         ]
         for field, label in [
             ("quantity", "Количество"),
@@ -144,7 +146,7 @@ class ExternalUI:
             f"Лимит: {binding['max_native']} {binding['currency']} / {money(binding['max_cost'])}\n"
             f"Сайты: {', '.join(binding['domains']) or 'username Telegram'}\n"
             f"Пауза: {'да' if binding['paused'] else 'нет'}\n"
-            f"Причина скрытия: {binding['hide_reason'] or '—'}",
+            f"Продажа: {issue_text(binding['hide_reason']) if binding['hide_reason'] else 'без ограничений бота'}",
             reply_markup=buttons(keys),
         )
 
@@ -196,7 +198,15 @@ class ExternalUI:
         if len(rows) == 20:
             keys.append(("→", f"x:orders:{mode}:{page + 1}"))
         keys.append(("‹ Назад", "x:home:" + mode))
-        await message.answer("Внешние заказы и сверка", reply_markup=buttons(keys))
+        await message.answer(
+            "🧾 Заказы поставщика\n\n"
+            + (
+                "Выберите заказ для просмотра результата."
+                if rows
+                else "Заказов пока нет. Новые покупки появятся здесь автоматически."
+            ),
+            reply_markup=buttons(keys),
+        )
 
     async def external_order(self, message, rid):
         row = self.db.one(
@@ -204,7 +214,7 @@ class ExternalUI:
             (rid,),
         )
         if not row:
-            return
+            raise ValueError("Заказ больше не доступен")
         keys = []
         if row["state"] == "review" and not row["remote_id"]:
             keys.append(("Привязать найденный заказ", f"x:attach:{rid}"))
@@ -228,7 +238,7 @@ class ExternalUI:
             f"Получатель: {target}\nНомер поставщика: {row['remote_id'] or 'не получен'}\n"
             f"{'Затраты' if row['cost_known'] else 'Предварительная оценка'}: {row['native_amount'] or '—'} {row['currency'] or ''} / {money(row['cost_rub'])}\n"
             f"Сверенный возврат поставщика: {row['supplier_refund']} {row['currency'] or ''}\n"
-            f"Причина проверки: {row['error'] or '—'}\n"
+            f"Следующий шаг: {issue_text(row['error'])}\n"
             f"Осталось выполнить: {row['remains'] if row['remains'] is not None else 'поставщик не сообщает'}\n"
             "Возврат поставщика и возврат покупателю на Playerok учитываются отдельно.",
             reply_markup=buttons(keys),
@@ -250,18 +260,19 @@ class ExternalUI:
         elif action == "provider":
             await self.provider_card(message, int(parts[2]))
         elif action == "check":
+            pid = int(parts[2])
+            await message.answer("⏳ Обновляю баланс и каталог…")
             try:
-                balances, catalog = await self.engine.external.check(int(parts[2]))
-                await message.answer(
-                    "Чтение API проверено. Баланс: "
+                async with asyncio.timeout(15):
+                    balances, catalog = await self.engine.external.check(pid)
+                notice = (
+                    "✅ Подключено · баланс обновлён: "
                     + ", ".join(f"{v} {k}" for k, v in balances.items())
                     + (f". Поддерживаемых услуг: {len(catalog)}." if catalog else ".")
                 )
-            except (ServiceError, KeyError, TypeError, ValueError, ArithmeticError):
-                await message.answer(
-                    "Не удалось проверить баланс или каталог. Проверьте ключ, активность аккаунта и совместимость API."
-                )
-            await self.provider_card(message, int(parts[2]))
+            except (ServiceError, TimeoutError, KeyError, TypeError, ValueError, ArithmeticError):
+                notice = "⚠️ Данные не обновлены. Откройте кабинет поставщика: ключ должен быть активен. Можно повторить загрузку позже."
+            await self.provider_card(message, pid, notice=notice)
         elif action == "toggle":
             pid = int(parts[2])
             provider = self.engine.external.provider(pid)
@@ -273,7 +284,18 @@ class ExternalUI:
                     provider["checked_revision"] != provider["revision"]
                     or now() - (provider["checked_at"] or 0) > 300
                 ):
-                    raise ValueError("Сначала нажмите «Проверить подключение»")
+                    await message.answer("⏳ Подключаю поставщика…")
+                    try:
+                        async with asyncio.timeout(15):
+                            await self.engine.external.check(pid)
+                    except (ServiceError, TimeoutError, KeyError, ValueError, TypeError, ArithmeticError):
+                        await self.provider_card(
+                            message,
+                            pid,
+                            notice="⚠️ Поставщик сейчас недоступен. Закупки не включены. Обновите ключ или повторите позже.",
+                        )
+                        return True
+                    provider = self.engine.external.provider(pid)
                 token = uuid.uuid4().hex[:12]
                 await state.update_data(
                     external_confirm={
@@ -284,9 +306,7 @@ class ExternalUI:
                     }
                 )
                 await message.answer(
-                    "Включить реальные закупки с баланса поставщика? Проверьте лимиты лотов. "
-                    "Для SMM поддерживается формат API v2 с услугами Default. Проверка подключения читает баланс и каталог, но не выполняет тестовую покупку. "
-                    "При неопределённом результате закупка останавливается до сверки.",
+                    "▶️ Включить автовыдачу?\n\nОплаченные заказы Playerok будут закупаться с баланса поставщика в пределах лимитов ваших лотов.",
                     reply_markup=buttons(
                         [("Включить", "x:confirm:" + token), ("Отмена", f"x:provider:{pid}")]
                     ),
@@ -317,14 +337,8 @@ class ExternalUI:
         elif action == "catalog":
             await self.catalog(message, state, module=parts[2], role="lot", page=0)
         elif action == "new":
-            await state.clear()
-            await self.external_prompt(
-                message,
-                state,
-                "new_id",
-                "Пришлите UUID готового лота Playerok с ручной выдачей.",
-                external_wizard={"mode": parts[2]},
-            )
+            await self.bind_start(message, state)
+            await state.update_data(binding_mode=parts[2])
         elif action == "choose":
             pid = int(parts[2])
             provider = self.engine.external.provider(pid)
@@ -402,7 +416,7 @@ class ExternalUI:
                     ),
                 )
             await state.clear()
-            await message.answer("Лот сохранён на паузе. Проверьте сценарий, затем снимите паузу в карточке.")
+            await message.answer("✅ Лот сохранён\n\nВключите выдачу кнопкой «Снять паузу» в карточке лота.")
             await self.external_lot(message, wizard["item_id"])
         elif action == "lotedit":
             row = self.db.one("SELECT item_id FROM bindings WHERE rowid=?", (int(parts[2]),))
@@ -513,6 +527,8 @@ class ExternalUI:
                     if confirmation["kind"] != "action"
                     else "Запрос поставщику отправлен. Проверьте результат в его кабинете."
                 )
+        else:
+            raise ValueError("Раздел больше не доступен")
         return True
 
     def external_domains(self, text):
@@ -704,7 +720,7 @@ class ExternalUI:
                 return await message.answer(
                     f"{wizard['title']}\nЛот: {wizard['item_id']}\nКоличество: {wizard['quantity']}\n"
                     f"Лимиты: {wizard['max_native']} {wizard['currency']} / {money(wizard['max_cost'])}\n"
-                    "Будет сохранён на паузе до проверки.",
+                    "После сохранения включите выдачу в карточке лота.",
                     reply_markup=buttons(
                         [("Сохранить лот", "x:save:" + wizard["token"]), ("Отменить", "ui:cancel")]
                     ),

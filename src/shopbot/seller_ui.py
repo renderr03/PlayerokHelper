@@ -14,6 +14,7 @@ from .maintenance import diagnostics, update_status
 from .models import now, rub
 from .presentation import link, safe
 from .rentals import Rentals
+from .ui_texts import stage_label
 
 MODE_NAMES = {
     "stock": "Склад",
@@ -123,7 +124,7 @@ class SellerUI:
         keys = (
             [("👤 Покупатель", "v6:customer:" + str(customer_order["rid"]))] if customer_order else []
         ) + [("✍ Ответить", "s:reply:" + str(rid)), ("⚡ Быстрый ответ", "s:quick:choose:" + str(rid))]
-        keys += [(r["stage"] + " · " + r["title"][:25], "order:" + r["id"]) for r in orders]
+        keys += [(stage_label(r["stage"]) + " · " + r["title"][:25], "order:" + r["id"]) for r in orders]
         keys += [("‹ Чаты", "s:inbox:all:0")]
         lines += ["", link("Открыть чат на Playerok", "chats/" + quote(chat["id"], safe=""))]
         await message.answer(
@@ -226,7 +227,18 @@ class SellerUI:
         token = uuid.uuid4().hex[:12]
         await state.set_state(None)
         await state.update_data(bulk={"field": field, "value": value, "snapshot": snapshot, "token": token})
-        lines = [f"Изменение: {field}. Значение: {str(value)[:1000]}", f"Лотов: {len(snapshot)}"]
+        label = {
+            "paused": "Пауза",
+            "instruction": "Инструкция",
+            "max_cost": "Лимит закупки",
+            "rules": "Правила ответов",
+        }.get(field, "Настройка")
+        display = ("включить" if value else "выключить") if field == "paused" else str(value)[:1000]
+        if field == "max_cost":
+            from .models import money
+
+            display = money(value)
+        lines = ["📋 Массовое изменение", f"{label}: {display}", f"Лотов: {len(snapshot)}"]
         lines += list(snapshot)[:20]
         lines.append(
             "Изменившиеся после предпросмотра лоты будут пропущены. Платные операции здесь не выполняются."
@@ -360,6 +372,14 @@ class SellerUI:
             return False
         parts = data.split(":")
         action = parts[1]
+        if action in {"bulk", "bulk-field", "bulk-pause"} and not (await state.get_data()).get(
+            "selected_lots"
+        ):
+            await message.answer(
+                "📦 Сначала выберите лоты\n\nОтметьте нужные позиции в каталоге или выберите текущую страницу целиком.",
+                reply_markup=buttons([("☑ Выбрать страницу", "s:select-page"), ("📦 К лотам", "s:page:0")]),
+            )
+            return True
         if action == "inbox":
             await self.workspace(message, state, view=parts[2], page=int(parts[3]))
         elif action == "own-catalog":

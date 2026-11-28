@@ -143,18 +143,18 @@ class Analytics:
             "📈 Аналитика магазина\n\n"
             f"🛍 Заказов: {s['orders']}, подтверждено: {s['confirmed']}\n"
             f"💰 Выручка подтверждённых заказов: {money(s['gross'])}\n↩️ Возвраты: {money(s['refunds'])}\n\n"
-            f"📦 Известная себестоимость: {money(s['cost'])}\nКомиссия: {money(s['commission'])}\n"
+            f"📦 Учтённая себестоимость: {money(s['cost'])}\nКомиссия: {money(s['commission'])}\n"
             f"Продвижение: {money(s['promotion'])}, резерв: {money(s['reserved'])}\n"
-            f"Бонусы: {money(s['bonus_cost'])}; неизвестная стоимость: {s['bonus_unknown']}; спорных отправок: {s['bonus_uncertain']}\n"
+            f"Бонусы: {money(s['bonus_cost'])}; стоимость ещё не добавлена: {s['bonus_unknown']}; без результата доставки: {s['bonus_uncertain']}\n"
             f"KOSell: {s['kosell_native']}. "
             + ("Рублёвый эквивалент USD оценочный.\n" if s["kosell_estimated"] else "\n")
             + f"Внешние закупки: {s['external_native']}; в процессе / на сверке: {s['external_pending']}\n"
             f"\n{'✅ Прибыль' if s['complete'] else '🟡 Предварительный результат'}: {money(s['profit'])}\n"
-            f"Себестоимость неизвестна у заказов: {s['unknown_costs']}\n"
+            f"Ожидают учёта расходов: {s['unknown_costs']}\n"
             + (
                 "Расчёт полный."
                 if s["complete"]
-                else "Расчёт неполный: проверьте комиссию, себестоимость и резервы."
+                else "Для полного расчёта добавьте комиссию и расходы, завершите текущие закупки."
             )
         )
 

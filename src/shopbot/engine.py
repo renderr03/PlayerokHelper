@@ -12,6 +12,7 @@ from .external import MODES, External
 from .loyalty import Loyalty
 from .models import Deal, ServiceError, money, now, rub, timestamp
 from .rentals import Rentals
+from .ui_texts import issue_text
 from .wallets import affordable, charge, number, rate, wallet
 
 TERMINAL = {"delivered", "historical", "ignored", "cancelled", "failed", "review"}
@@ -172,7 +173,9 @@ class Engine:
     def fail(self, order_id: str, code: str, *, review=False):
         self.update(order_id, stage="review" if review else "failed", error=code)
         self.db.notify(
-            f"Заказ {order_id}: требуется проверка\nПричина: {code}", f"failure:{order_id}:{code}", order_id
+            f"⏸ Обработка заказа приостановлена\n\n🧾 Заказ: {order_id}\n{issue_text(code)}",
+            f"failure:{order_id}:{code}",
+            order_id,
         )
 
     async def process(self, order_id: str):
@@ -605,7 +608,7 @@ class Engine:
                 )
                 if row["channel"] == "playerok":
                     self.db.notify(
-                        f"Отправка в чат {row['target']}: {exc.code}. Требуется проверка.",
+                        f"✉️ Ответ о доставке не получен\n\nЧат: {row['target']}\nОткройте переписку перед повторной отправкой.",
                         f"send_error:{row['id']}",
                     )
                 continue

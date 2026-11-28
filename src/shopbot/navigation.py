@@ -26,6 +26,7 @@ class PanelContext:
     key: tuple
     panels: dict
     anchor: Message | None
+    rendered: bool = False
 
     def remember(self, message):
         if isinstance(message, Message):
@@ -70,15 +71,20 @@ class PanelNavigation(BaseMiddleware):
             if anchor is None or message.message_id >= anchor.message_id:
                 anchor = message
         old_state, old_data = await state.get_state(), deepcopy(await state.get_data())
-        token = context.set(PanelContext(state, key, self.panels, anchor))
+        panel = PanelContext(state, key, self.panels, anchor)
+        token = context.set(panel)
         try:
             result = await handler(event, data)
+            if isinstance(event, CallbackQuery) and not panel.rendered:
+                await message.answer(
+                    "↩️ Этот экран уже обновился\n\nОткройте нужный раздел из главного меню.",
+                    reply_markup=buttons([("🏠 Главное меню", "menu:home")]),
+                )
             new_state, new_data = await state.get_state(), await state.get_data()
             if (
-                old_state
-                and new_state
+                new_state
                 and not new_state.startswith("ConnectionForm:")
-                and not old_state.startswith("ConnectionForm:")
+                and not (old_state or "").startswith("ConnectionForm:")
                 and not (isinstance(event, CallbackQuery) and event.data in {"ui:back", "ui:cancel"})
             ):
 
@@ -88,7 +94,11 @@ class PanelNavigation(BaseMiddleware):
                 if (old_state, clean(old_data)) != (new_state, clean(new_data)):
                     stack = old_data.get("_nav_stack", [])[-7:]
                     stack.append(
-                        {"state": old_state, "data": clean(old_data), "prompt": old_data.get("_nav_prompt")}
+                        {
+                            "state": old_state,
+                            "data": clean(old_data),
+                            "prompt": old_data.get("_nav_prompt" if old_state else "_nav_screen"),
+                        }
                     )
                     await state.update_data(_nav_stack=stack)
             return result
@@ -108,6 +118,7 @@ class NavigationMessages:
         ):
             return await make_request(bot, method)
         state = panel.state
+        panel.rendered = True
         current = await state.get_state()
         markup = method.reply_markup
         rows = deepcopy(markup.inline_keyboard) if isinstance(markup, InlineKeyboardMarkup) else []
@@ -122,17 +133,16 @@ class NavigationMessages:
             rows.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu:home")])
         if rows:
             method.reply_markup = styled_keyboard(InlineKeyboardMarkup(inline_keyboard=rows))
-        if current and isinstance(method, SendMessage) and not current.startswith("ConnectionForm:"):
-            await state.update_data(
-                _nav_prompt={
-                    "text": method.text,
-                    "parse_mode": method.parse_mode if isinstance(method.parse_mode, str) else None,
-                    "entities": [e.model_dump(mode="json") for e in method.entities]
-                    if method.entities
-                    else None,
-                    "markup": method.reply_markup.model_dump(mode="json") if method.reply_markup else None,
-                }
-            )
+        if isinstance(method, SendMessage) and not (current or "").startswith("ConnectionForm:"):
+            prompt = {
+                "text": method.text,
+                "parse_mode": method.parse_mode if isinstance(method.parse_mode, str) else None,
+                "entities": [e.model_dump(mode="json") for e in method.entities] if method.entities else None,
+                "markup": method.reply_markup.model_dump(mode="json") if method.reply_markup else None,
+            }
+            await state.update_data(_nav_screen=prompt)
+            if current:
+                await state.update_data(_nav_prompt=prompt)
         if isinstance(method, SendDocument):
             # Files are separate deliverables, never the anchor of the text panel.
             return await make_request(bot, method)

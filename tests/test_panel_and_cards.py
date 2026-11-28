@@ -242,7 +242,8 @@ async def test_order_and_chat_panels_are_readable_html_and_keep_controls(panel):
     await send(callback="order:" + deal.id)
     response = session.calls[-1]
     assert response.parse_mode == "HTML" and "<b>Статус:</b> Оплачен" in response.text
-    assert "&lt;bad&gt;" in response.text and "&lt;name&gt;" in response.text
+    assert "<bad>" not in response.text and "&lt;name&gt;" in response.text
+    assert "bad" not in response.text  # raw transport errors stay out of the admin UI
     assert any(
         b.callback_data == "refund:" + deal.id for row in response.reply_markup.inline_keyboard for b in row
     )

@@ -24,7 +24,7 @@ from aiogram.types import (
 from . import __version__
 from .account_ui import AccountUI, ConnectionForm, lot_error_text
 from .analytics import Analytics
-from .checks import preview_delivery
+from .checks import connection_snapshot, preview_delivery
 from .engine import Engine
 from .external_ui import ExternalUI
 from .loyalty import Loyalty
@@ -39,6 +39,7 @@ from .presentation import safe as safe_html
 from .rentals import Rentals
 from .seller_ui import MODE_NAMES, SellerUI
 from .shop_ui import ShopForm, ShopUI
+from .ui_texts import issue_text, stage_label
 from .updates import Updates, read_json, release_summary
 from .wallets import balance_text
 
@@ -83,7 +84,7 @@ class AdminOnly(BaseMiddleware):
             text = update_status(self.maintenance.parent.parent)
             result = read_json(self.maintenance.parent / "result.json", {})
             if isinstance(result, dict) and result.get("status") == "manual_required":
-                text = "Автоматическое восстановление не завершено. Нужна проверка сервера администратором."
+                text = "🛠 Восстановление остановлено. Откройте инструкцию по восстановлению в репозитории PlayerokHelper."
             if isinstance(event, CallbackQuery):
                 await event.answer(text, show_alert=True)
             else:
@@ -194,8 +195,12 @@ class TelegramUI(ShopUI, AccountUI, ExternalUI, SellerUI):
         )
 
     def readiness_label(self):
-        value = self.db.get("readiness_status", "не проверено")
-        return "требует настройки" if "_" in value else value
+        value = self.db.get("readiness_status")
+        if not value or value == "не проверено":
+            return "➕ Добавьте аккаунт" if not self.db.get("profile") else "🔄 Подключаемся"
+        if value == "готово":
+            return "✅ Подключён"
+        return "🔌 Откройте подключения" if "_" in value else value
 
     async def status(self, message, state=None):
         status = self.engine.diagnostic()
@@ -221,7 +226,7 @@ class TelegramUI(ShopUI, AccountUI, ExternalUI, SellerUI):
             "📋 Состояние магазина\n\n"
             f"🔌 Подключение: {self.readiness_label()}\n"
             f"⏸ Пауза: {'да' if status['paused'] else 'нет'}\n\n🛍 Заказов: {status['orders']}\n"
-            f"⚠️ Требуют проверки: {status['review']}\nНеопределённые отправки: {status['uncertain']}\n"
+            f"⏸ Приостановлено заказов: {status['review']}\n✉️ Без ответа о доставке: {status['uncertain']}\n"
             f"Внешних заказов в работе: {status['provider_pending']}\nВнешних заказов на сверке: {status['provider_review']}\n"
             f"Последняя успешная сверка: {self.engine.expiry(self.db.get('last_poll'))}\n\n"
             f"🔄 {background}",
@@ -257,7 +262,7 @@ class TelegramUI(ShopUI, AccountUI, ExternalUI, SellerUI):
                 source, "выберите ниже"
             ),
             "",
-            "Доступ и баланс проверяются автоматически. Тест со снятием товара не нужен.",
+            "✨ Подключения и баланс обновляются автоматически.",
         ]
         if not count:
             lines += [
@@ -406,13 +411,13 @@ class TelegramUI(ShopUI, AccountUI, ExternalUI, SellerUI):
                 "success": "установлено",
                 "rolled_back": "выполнен откат",
                 "failed": "не установлено",
-                "manual_required": "нужна проверка сервера",
-            }.get(item.get("status"), "неизвестно")
+                "manual_required": "восстановление остановлено",
+            }.get(item.get("status"), "результат ещё не получен")
             lines.append(f"\n{self.engine.expiry(item.get('finished_at'))}: {item.get('tag')} — {label}")
             reason = {
                 "modified_project": "В проекте есть локальные изменения; они сохранены.",
                 "main_branch_required": "Для обновления требуется ветка main.",
-                "release_tag_changed": "Коммит релиза изменился; нужна повторная проверка версии.",
+                "release_tag_changed": "Версия на GitHub изменилась. Нажмите «Проверить сейчас».",
                 "release_changes_private_files": "Релиз затрагивает настройки или данные; установка остановлена.",
                 "command_failed": "Не выполнена загрузка, сборка или установка; прежняя версия сохранена либо восстановлена.",
                 "health_check_failed": "Новая версия не подтвердила успешный запуск.",
@@ -452,6 +457,8 @@ class TelegramUI(ShopUI, AccountUI, ExternalUI, SellerUI):
             await state.update_data(reply_nonce=None, reply_text=None)
         if not data.startswith(("v6:tplapply:", "v6:rulesave:")):
             await state.update_data(shop_confirm=None)
+        if not data.startswith("x:confirm:"):
+            await state.update_data(external_confirm=None)
         if data == "ui:cancel":
             return await self.cancel(message, state)
         if data == "ui:back":
@@ -580,56 +587,25 @@ class TelegramUI(ShopUI, AccountUI, ExternalUI, SellerUI):
                 module = data.split(":")[1]
                 return await self.bindings_menu(message, module, state)
             if data == "menu:analytics":
-                return await message.answer(
-                    self.analytics.text(),
-                    reply_markup=keyboard(
-                        [
-                            ("📊 Графики и сравнение", "v6:stats:7"),
-                            ("📊 Выгрузить Excel", "report:all"),
-                            ("📦 Товары", "analytics:items"),
-                            ("🗓 Фильтр периода", "edit:report_filter"),
-                            (
-                                "✅ Ежедневный отчёт"
-                                if self.db.get("daily_report")
-                                else "⬜ Ежедневный отчёт",
-                                "toggle:daily_report",
-                            ),
-                            ("🕒 Время ежедневного отчёта", "edit:report_time"),
-                            ("💰 Комиссия Playerok", "edit:fee_percent"),
-                            ("Загрузить историю", "history:confirm"),
-                            ("‹ Назад", "menu:home"),
-                        ]
-                    ),
-                )
+                return await self.analytics_menu(message)
             if data == "menu:account":
-                return await message.answer(
-                    "📍 Управление магазином\n\nЗаказы, подключения и операции, которым нужно ваше внимание.",
-                    reply_markup=keyboard(
-                        [
-                            ("🔌 Подключения", "connect:home"),
-                            ("📋 Статус магазина", "connect:status"),
-                            ("📦 Привязанные лоты", "bindings:all"),
-                            ("🧾 Последние заказы", "orders:0"),
-                            ("⚠️ Неопределённые отправки", "uncertain:list"),
-                            ("💳 Неопределённые списания", "expenses:list"),
-                            (
-                                "▶ Возобновить" if self.db.get("paused") else "⏸ Пауза и скрытие лотов",
-                                "toggle:paused",
-                            ),
-                            ("🗃 Создать резервную копию", "backup"),
-                            ("🚨 Ранние предупреждения", "alerts:home"),
-                            ("‹ Назад", "menu:home"),
-                        ]
-                    ),
-                )
+                return await self.account_menu(message)
             if data == "menu:help":
                 return await self.help(message)
+            if data == "menu:attention":
+                return await self.attention_menu(message)
             if data.startswith("toggle:"):
                 key = data.split(":")[1]
                 if key not in {"daily_report", "paused", "paid_enabled", "offline_override"}:
                     return
                 self.db.set(key, not self.db.get(key))
-                return await message.answer("Сохранено.")
+                if key == "daily_report":
+                    return await self.analytics_menu(message)
+                if key == "paused":
+                    return await self.account_menu(message)
+                if key == "paid_enabled":
+                    return await self.promotion_menu(message)
+                return await self.auto_menu(message, state)
             if data.startswith("feature:"):
                 key = data.split(":")[1]
                 if key not in LABELS:
@@ -680,7 +656,7 @@ class TelegramUI(ShopUI, AccountUI, ExternalUI, SellerUI):
                     "work_hours": "Рабочие часы по Москве: например 9-23. Для круглосуточной работы: 0-24.",
                     "action_limit": "Максимальная стоимость одной операции в рублях (0 запрещает платные действия).",
                     "daily_budget": "Общий суточный бюджет продвижения в рублях. День считается по часовому поясу магазина.",
-                    "fee_percent": "Комиссия Playerok в процентах: например 10. Значение - означает неизвестную комиссию.",
+                    "fee_percent": "Комиссия Playerok в процентах: например 10. Отправьте - , чтобы добавить комиссию позже.",
                     "report_time": "Время ежедневного отчёта: ЧЧ:ММ, часовой пояс магазина.",
                     "report_filter": "Период: ГГГГ-ММ-ДД ГГГГ-ММ-ДД (обе даты включительно). "
                     "Необязательно добавьте item=ID или module=kosell/stock/extend.",
@@ -691,20 +667,7 @@ class TelegramUI(ShopUI, AccountUI, ExternalUI, SellerUI):
                 await state.update_data(edit=key)
                 return await message.answer(prompts[key])
             if data == "promotion":
-                return await message.answer(
-                    f"Платные действия: {'включены' if self.db.get('paid_enabled') else 'выключены'}\n"
-                    f"Одна операция: {money(self.db.get('action_limit'))}\n"
-                    f"Суточный бюджет: {money(self.db.get('daily_budget'))}",
-                    reply_markup=keyboard(
-                        [
-                            ("Включить / выключить платные действия", "toggle:paid_enabled"),
-                            ("Лимит операции", "edit:action_limit"),
-                            ("Суточный бюджет", "edit:daily_budget"),
-                            ("Настроить лоты", "bindings:all"),
-                            ("‹ Назад", "menu:auto"),
-                        ]
-                    ),
-                )
+                return await self.promotion_menu(message)
             if data == "bindings:all":
                 return await self.bindings_menu(message, state=state)
             if data == "bind:new":
@@ -740,10 +703,12 @@ class TelegramUI(ShopUI, AccountUI, ExternalUI, SellerUI):
                 return await message.answer(
                     "Пришлите UTF-8 TXT или текст: одна строка — один товар. "
                     "Для общей себестоимости добавьте первой строкой «cost=12.50». "
-                    "Без неё себестоимость будет неизвестной."
+                    "Без этой строки стоимость можно добавить позже."
                 )
             if data.startswith("orders:"):
                 return await self.orders(message, max(0, int(data.split(":")[1])))
+            if data.startswith("attention-orders:"):
+                return await self.orders(message, max(0, int(data.split(":")[1])), attention=True)
             if data.startswith("order:"):
                 return await self.order_card(message, data[6:])
             if data.startswith("reply:"):
@@ -786,8 +751,16 @@ class TelegramUI(ShopUI, AccountUI, ExternalUI, SellerUI):
                     )
             if data.startswith("refund_yes:"):
                 order_id = data[11:]
-                if self.db.get("readiness_status") != "готово":
-                    return await message.answer("Подключение не прошло проверку готовности.")
+                snapshot = await connection_snapshot(
+                    self.db, self.engine.market, self.engine.kosell, check_kosell=False
+                )
+                if not snapshot["services"]["playerok"]["ok"]:
+                    return await message.answer(
+                        "🔌 Нет связи с Playerok\n\nВозврат не отправлен. Восстановите подключение и откройте заказ заново.",
+                        reply_markup=keyboard(
+                            [("🔌 Подключения", "connect:home"), ("‹ Заказ", "order:" + order_id)]
+                        ),
+                    )
                 self.db.audit("refund_requested", order_id)
                 fresh = await self.engine.market.deal(order_id)
                 if fresh.status != "ROLLED_BACK":
@@ -844,7 +817,12 @@ class TelegramUI(ShopUI, AccountUI, ExternalUI, SellerUI):
                     "ORDER BY id DESC LIMIT 30"
                 )
                 return await message.answer(
-                    "Отправки на проверке. Повтор отправляет те же данные; сначала проверьте историю чата.",
+                    "✉️ Доставка сообщений\n\n"
+                    + (
+                        "Playerok не вернул результат отправки. Откройте историю чата перед повтором."
+                        if rows
+                        else "✅ Все сообщения обработаны. Отправок без результата нет."
+                    ),
                     reply_markup=keyboard(
                         [(f"#{r['id']} — {r['target'][:20]}", f"resend:{r['id']}") for r in rows]
                     ),
@@ -872,7 +850,12 @@ class TelegramUI(ShopUI, AccountUI, ExternalUI, SellerUI):
                     "SELECT * FROM listing_actions WHERE state='uncertain' ORDER BY created_at DESC"
                 )
                 return await message.answer(
-                    "Сначала проверьте списание в Playerok.",
+                    "💳 Учёт списаний\n\n"
+                    + (
+                        "Playerok не вернул результат операции. Укажите фактическое списание из истории платежей."
+                        if rows
+                        else "✅ Все операции учтены. Списаний без результата нет."
+                    ),
                     reply_markup=keyboard(
                         [
                             (f"{r['kind']} {r['item_id'][:12]} {money(r['price'])}", "expense:" + r["id"])
@@ -904,12 +887,107 @@ class TelegramUI(ShopUI, AccountUI, ExternalUI, SellerUI):
             if data == "backup":
                 path = self.db.backup(self.data_dir / "backups")
                 return await message.answer(f"Резервная копия создана: {path.name}. Хранится на сервере.")
-        except (ValueError, KeyError, ArithmeticError):
-            await message.answer("Некорректное значение. Проверьте ввод или нажмите «Отменить».")
-        except ServiceError as exc:
+            await message.answer("↩️ Этот экран уже обновился\n\nОткройте нужный раздел из главного меню.")
+        except (ValueError, KeyError, TypeError, IndexError, ArithmeticError):
             await message.answer(
-                f"Сервис не выполнил операцию: {exc.code}. Проверьте состояние перед повтором."
+                "↩️ Откройте действие заново\n\nДанные изменились или формат значения не подходит. Выберите нужный раздел или нажмите «Назад»."
             )
+        except TimeoutError:
+            await message.answer(
+                "⏱ Сервис отвечает дольше обычного\n\nПопробуйте позже. Если отправляли платный запрос, сначала откройте его результат в заказе."
+            )
+        except ServiceError as exc:
+            await message.answer("⚠️ Операция остановлена\n\n" + issue_text(exc.code))
+
+    async def analytics_menu(self, message):
+        return await message.answer(
+            self.analytics.text(),
+            reply_markup=keyboard(
+                [
+                    ("📊 Графики и сравнение", "v6:stats:7"),
+                    ("📊 Выгрузить Excel", "report:all"),
+                    ("📦 Товары", "analytics:items"),
+                    ("🗓 Фильтр периода", "edit:report_filter"),
+                    (
+                        "✅ Ежедневный отчёт" if self.db.get("daily_report") else "⬜ Ежедневный отчёт",
+                        "toggle:daily_report",
+                    ),
+                    ("🕒 Время ежедневного отчёта", "edit:report_time"),
+                    ("💰 Комиссия Playerok", "edit:fee_percent"),
+                    ("Загрузить историю", "history:confirm"),
+                    ("‹ Назад", "menu:home"),
+                ]
+            ),
+        )
+
+    async def account_menu(self, message):
+        return await message.answer(
+            "📍 Управление магазином\n\nЗаказы, подключения и операции, которым нужно ваше внимание.",
+            reply_markup=keyboard(
+                [
+                    ("🔌 Подключения", "connect:home"),
+                    ("📋 Статус магазина", "connect:status"),
+                    ("📦 Привязанные лоты", "bindings:all"),
+                    ("🧾 Последние заказы", "orders:0"),
+                    ("🔔 Центр событий", "menu:attention"),
+                    ("✉️ Доставка сообщений", "uncertain:list"),
+                    ("💳 Учёт списаний", "expenses:list"),
+                    (
+                        "▶ Возобновить" if self.db.get("paused") else "⏸ Пауза и скрытие лотов",
+                        "toggle:paused",
+                    ),
+                    ("🗃 Создать резервную копию", "backup"),
+                    ("🚨 Ранние предупреждения", "alerts:home"),
+                    ("‹ Назад", "menu:home"),
+                ]
+            ),
+        )
+
+    async def promotion_menu(self, message):
+        return await message.answer(
+            f"Платные действия: {'включены' if self.db.get('paid_enabled') else 'выключены'}\n"
+            f"Одна операция: {money(self.db.get('action_limit'))}\n"
+            f"Суточный бюджет: {money(self.db.get('daily_budget'))}",
+            reply_markup=keyboard(
+                [
+                    ("Включить / выключить платные действия", "toggle:paid_enabled"),
+                    ("Лимит операции", "edit:action_limit"),
+                    ("Суточный бюджет", "edit:daily_budget"),
+                    ("Настроить лоты", "bindings:all"),
+                    ("‹ Назад", "menu:auto"),
+                ]
+            ),
+        )
+
+    async def attention_menu(self, message):
+        status = self.engine.diagnostic()
+        affected = self.db.one(
+            "SELECT count(*) n FROM orders WHERE stage IN ('review','failed') OR problem=1"
+        )["n"]
+        deliveries = self.db.one(
+            "SELECT count(*) n FROM outbox WHERE channel='playerok' AND state IN ('uncertain','failed')"
+        )["n"]
+        total = affected + deliveries + status["provider_review"]
+        expenses = self.db.one("SELECT count(*) n FROM listing_actions WHERE state='uncertain'")["n"]
+        await message.answer(
+            "🔔 Центр событий\n\n"
+            + (
+                "✅ Нет незавершённых обращений.\n\n"
+                if not total and not expenses
+                else "Выберите раздел, чтобы продолжить обработку.\n\n"
+            )
+            + f"🧾 Приостановлено заказов: {affected}\n✉️ Без ответа о доставке: {deliveries}\n⚡ Заказы поставщиков: {status['provider_review']}\n💳 Списания без результата: {expenses}",
+            reply_markup=keyboard(
+                [
+                    ("🧾 Открыть обращения", "attention-orders:0"),
+                    ("✉️ Доставка сообщений", "uncertain:list"),
+                    ("💳 Учёт списаний", "expenses:list"),
+                    ("⭐ Заказы Stars", "x:orders:stars:0"),
+                    ("💜 Заказы SMM", "x:orders:smm:0"),
+                    ("‹ Управление", "menu:account"),
+                ]
+            ),
+        )
 
     async def auto_menu(self, message, state):
         scope = (await state.get_data()).get("scope")
@@ -964,12 +1042,18 @@ class TelegramUI(ShopUI, AccountUI, ExternalUI, SellerUI):
         rid = self.db.one("SELECT rowid rid FROM bindings WHERE item_id=?", (item_id,))["rid"]
         rows = [
             ("💰 Порог маржи", f"s:margin:{rid}"),
-            ("🧪 Проверить сценарий", f"preview:lot:{item_id}"),
+            ("👁 Предпросмотр выдачи", f"preview:lot:{item_id}"),
             ("📋 Сохранить шаблон", f"v6:tplsave:{rid}"),
             ("💰 Рассчитать цену", f"v6:price:{rid}"),
             ("▶ Снять ручную паузу" if b["paused"] else "⏸ Ручная пауза", f"lotflag:paused:{item_id}"),
-            ("Автовыставление: " + str(bool(b["auto_restore"])), f"lotflag:auto_restore:{item_id}"),
-            ("Автоподнятие: " + str(bool(b["auto_bump"])), f"lotflag:auto_bump:{item_id}"),
+            (
+                "🔄 Автовыставление: " + ("🟢 вкл" if b["auto_restore"] else "⚪ выкл"),
+                f"lotflag:auto_restore:{item_id}",
+            ),
+            (
+                "🚀 Автоподнятие: " + ("🟢 вкл" if b["auto_bump"] else "⚪ выкл"),
+                f"lotflag:auto_bump:{item_id}",
+            ),
         ]
         for field, label in [
             ("max_cost", "Лимит закупки"),
@@ -998,7 +1082,7 @@ class TelegramUI(ShopUI, AccountUI, ExternalUI, SellerUI):
                 else ""
             )
             + f"Часов: {b['hours']}\nСвободных позиций: {count}\n"
-            f"Причина скрытия: {b['hide_reason'] or '—'}\n"
+            f"Продажа: {issue_text(b['hide_reason']) if b['hide_reason'] else 'без ограничений бота'}\n"
             + (
                 "Ожидаемая маржа: "
                 + money(self.db.get("margin:" + item_id, {}).get("margin"))
@@ -1028,13 +1112,18 @@ class TelegramUI(ShopUI, AccountUI, ExternalUI, SellerUI):
             elif step == 1:
                 if text in {"stars", "smm"}:
                     await state.clear()
-                    return await self.external_prompt(
+                    await self.external_prompt(
                         message,
                         state,
                         "new_title",
                         "Название лота для меню, до 150 символов.",
                         external_wizard={"mode": text, "item_id": b["item_id"]},
                     )
+                    if data.get("catalog_title"):
+                        return await self.external_value(
+                            message, state, "x:new_title", data["catalog_title"], await state.get_data()
+                        )
+                    return
                 if text not in {"kosell", "extend", "stock", "own_rent", "own_extend"}:
                     raise ValueError()
                 b["fulfillment"] = text if text.startswith("own_") else ""
@@ -1098,6 +1187,10 @@ class TelegramUI(ShopUI, AccountUI, ExternalUI, SellerUI):
                 await state.clear()
                 return await self.lot(message, b["item_id"])
             await state.update_data(step=next_step, binding=b)
+            if step == 0 and data.get("binding_mode") in {"stars", "smm"}:
+                return await self.binding_input(
+                    message.model_copy(update={"text": data["binding_mode"]}).as_(self.bot), state
+                )
             if step == 1 and data.get("catalog_title"):
                 return await self.binding_input(
                     message.model_copy(update={"text": data["catalog_title"]}).as_(self.bot), state
@@ -1332,23 +1425,42 @@ class TelegramUI(ShopUI, AccountUI, ExternalUI, SellerUI):
             reply_markup=keyboard([("Отправить", "reply_send:" + nonce), ("Отмена", "menu:home")]),
         )
 
-    async def orders(self, message, page):
-        rows = self.db.all("SELECT * FROM orders ORDER BY created_at DESC LIMIT 10 OFFSET ?", (page * 10,))
+    async def orders(self, message, page, *, attention=False):
+        where = " WHERE stage IN ('review','failed') OR problem=1" if attention else ""
+        prefix = "attention-orders:" if attention else "orders:"
+        count = self.db.one("SELECT count(*) n FROM orders" + where)["n"]
+        page = min(max(0, page), max(0, (count - 1) // 10))
+        rows = self.db.all(
+            "SELECT * FROM orders" + where + " ORDER BY created_at DESC LIMIT 10 OFFSET ?", (page * 10,)
+        )
         await message.answer(
-            "Заказы",
+            f"🧾 Заказы · {count}\n\n"
+            + (
+                f"Страница {page + 1}. Выберите заказ ↓"
+                if rows
+                else "Новые покупки появятся здесь автоматически."
+            ),
             reply_markup=keyboard(
                 [
-                    (f"{r['stage']} · {r['title'][:24]} · {money(r['price'])}", "order:" + r["id"])
+                    (
+                        f"{stage_label(r['stage'])} · {r['title'][:24]} · {money(r['price'])}",
+                        "order:" + r["id"],
+                    )
                     for r in rows
                 ]
-                + [("Далее", f"orders:{page + 1}"), ("‹ В меню", "menu:account")]
+                + ([("← Назад", f"{prefix}{page - 1}")] if page else [])
+                + ([("Далее →", f"{prefix}{page + 1}")] if (page + 1) * 10 < count else [])
+                + [("‹ В меню", "menu:account")]
             ),
         )
 
     async def order_card(self, message, order_id):
         row = self.engine.order(order_id)
         if not row:
-            return
+            return await message.answer(
+                "🧾 Заказ больше не доступен\n\nОткройте актуальный список заказов.",
+                reply_markup=keyboard([("🧾 Заказы", "orders:0")]),
+            )
         rows = [("✉ Ответить", "reply:" + order_id), ("▶ Возобновить автоответы", "resume:" + order_id)]
         if row["module"] in {"stars", "smm"} and self.db.one(
             "SELECT order_id FROM provider_orders WHERE order_id=?", (order_id,)
@@ -1390,8 +1502,8 @@ class TelegramUI(ShopUI, AccountUI, ExternalUI, SellerUI):
             "sending": "Отправка покупателю",
             "delivered": "Выдан",
             "cancelled": "Отменён",
-            "review": "Нужна сверка",
-            "failed": "Нужна проверка",
+            "review": "⏸ Обработка приостановлена",
+            "failed": "⚠️ Ошибка обработки",
             "historical": "Из истории",
             "ignored": "Нет настроенной выдачи",
             "wait_selection": "Ожидается выбор покупателя",
@@ -1403,7 +1515,7 @@ class TelegramUI(ShopUI, AccountUI, ExternalUI, SellerUI):
             + f"\n\n<b>Статус:</b> {safe_html(market_status)}\n<b>Выдача:</b> {safe_html(stage)}\n<b>Закупка:</b> {card_price(row['cost'])}"
         )
         if row["error"]:
-            text += "\n<b>Требует внимания:</b> " + safe_html(row["error"], 120)
+            text += "\n\n<b>Следующий шаг:</b> " + safe_html(issue_text(row["error"]), 350)
         await message.answer(text, parse_mode="HTML", disable_web_page_preview=True, reply_markup=markup)
 
     def parse_filters(self, text):
@@ -1443,15 +1555,22 @@ class TelegramUI(ShopUI, AccountUI, ExternalUI, SellerUI):
     async def send_report(self, message, **filters):
         path = self.analytics.export(self.data_dir / "reports" / f"report-{uuid.uuid4().hex}.xlsx", **filters)
         await message.answer(self.analytics.text(**filters))
-        await message.answer_document(BufferedInputFile(path.read_bytes(), filename="playerok-report.xlsx"))
+        await message.answer_document(
+            BufferedInputFile(path.read_bytes(), filename="playerok-report.xlsx"),
+            caption="📊 Отчёт магазина\n\nПродажи, расходы и результаты за выбранный период.",
+        )
 
     async def import_history(self, message, state=None):
         await message.answer("Загружаю историю только для аналитики…")
         try:
             await self.engine.poll_orders(historical=True)
-            await message.answer("История загружена. Себестоимость прошлых закупок может быть неизвестна.")
+            await message.answer(
+                "✅ История загружена. Для полного расчёта прибыли добавьте расходы прошлых закупок."
+            )
         except ServiceError as exc:
-            await message.answer(f"Загрузка прервана: {exc.code}. Уже полученные записи сохранены.")
+            await message.answer(
+                "⚠️ Загрузка остановлена\n\n" + issue_text(exc.code) + " Уже полученные записи сохранены."
+            )
 
     async def help(self, message, state=None):
         await message.answer(

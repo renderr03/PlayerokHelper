@@ -12,7 +12,7 @@ from .presentation import clip
 
 
 def has_icon(text):
-    return bool(text) and (ord(text[0]) >= 0x1F000 or 0x2300 <= ord(text[0]) <= 0x2BFF)
+    return bool(text) and (ord(text[0]) >= 0x1F000 or 0x2190 <= ord(text[0]) <= 0x2BFF)
 
 
 def panel_html(value, *, limit=3900):
@@ -21,7 +21,7 @@ def panel_html(value, *, limit=3900):
         return ""
     first, _, rest = text.partition("\n")
     if first.startswith(("Не ", "Невер", "Некоррект", "Ссылка не", "Подтверждение устарело", "Проверьте")):
-        return "<b>⚠️ Проверьте данные</b>\n\n" + escape(text)
+        return "<b>💡 Следующий шаг</b>\n\n" + escape(text)
     if len(first) > 100:
         title = "💬 PlayerokHelper"
         if first.startswith(("Пришлите", "Введите", "Отправьте", "Выберите")):
@@ -29,7 +29,7 @@ def panel_html(value, *, limit=3900):
         elif first.startswith(("Обновление", "Установить")):
             title = "⬆️ Обновление бота"
         elif first.startswith(("Нахожу", "Проверяю", "Загружаю")):
-            title = "⏳ Проверка"
+            title = "⏳ Подключаемся"
         return f"<b>{title}</b>\n\n{escape(text)}"
     icon = "✍️" if first.startswith(("Пришлите", "Введите", "Отправьте", "Выберите")) else "✨"
     if first.startswith(("Нахожу", "Проверяю", "Загружаю")):
@@ -58,10 +58,43 @@ def styled_keyboard(markup):
         "Подключить аккаунт": "🔌 Подключить аккаунт",
         "Настроить магазин": "🧭 Настроить магазин",
         "Загрузить историю": "🗂 Загрузить историю",
+        "Включить": "▶️ Включить",
+        "Выключить": "⏸ Выключить",
+        "Запустить": "▶️ Запустить",
+        "Остановить": "⏸ Остановить",
+        "Лимит операции": "💰 Лимит операции",
+        "Суточный бюджет": "🗓 Суточный бюджет",
+        "Настроить лоты": "📦 Настроить лоты",
+        "Каталог услуг": "📚 Каталог услуг",
+        "Разрешённые сайты": "🌐 Разрешённые сайты",
+        "Количество": "🔢 Количество",
+        "Инструкция": "📝 Инструкция",
+        "Поиск": "🔎 Поиск",
+        "Отправить": "✉️ Отправить",
+        "Отправить запрос": "✉️ Отправить запрос",
+        "Подтверждаю возврат": "↩️ Подтверждаю возврат",
+        "Пауза": "⏸ Пауза",
+        "Снять паузу": "▶️ Снять паузу",
+        "Тексты этого лота": "💬 Тексты этого лота",
+        "Настройки сообщений этого лота": "💬 Сообщения этого лота",
+        "Курс для учёта в рублях": "💱 Курс учёта в рублях",
+        "Порог низкого баланса": "🔔 Порог баланса",
+        "Как получить токен": "📖 Как получить токен",
+        "VingBoost": "💜 VingBoost",
+        "Twiboost": "💜 Twiboost",
+        "Vexboost": "💜 Vexboost",
+        "JustAnotherPanel": "💜 JustAnotherPanel",
     }
     for row in result.inline_keyboard:
         for button in row:
             button.text = labels.get(button.text, button.text)
+            for prefix, icon in (
+                ("Подтверждение получателя:", "👤"),
+                ("Автовозврат:", "↩️"),
+                ("Уведомления:", "🔔"),
+            ):
+                if button.text.startswith(prefix):
+                    button.text = icon + " " + button.text
             if button.style is not None:
                 continue
             action = button.callback_data or ""
@@ -69,6 +102,8 @@ def styled_keyboard(markup):
                 button.style = "success"
             elif action == "ui:cancel" or action.startswith(("refund:", "refund_yes:", "card:refund:")):
                 button.style = "danger"
+            elif action.startswith("x:confirm:"):
+                button.style = "primary"
             elif action in {
                 "connect:playerok",
                 "connect:home",
