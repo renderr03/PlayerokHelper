@@ -25,6 +25,10 @@ def issue_text(code):
     """Only known categories reach the UI; provider text may contain secrets."""
     code = str(code or "")
     messages = {
+        "manual_pause": "Автовыдача этого лота выключена. Включите её в карточке лота, когда закончите настройку.",
+        "external_provider_not_ready": "Откройте поставщика и включите закупки после настройки.",
+        "external_provider_invalid_response": "Поставщик вернул неполные данные. Обновите баланс и каталог в его карточке.",
+        "provider_insufficient_balance": "На балансе поставщика недостаточно средств для этого пакета. Пополните баланс или уменьшите количество.",
         "playerok_not_configured": "Добавьте аккаунт Playerok в разделе «Подключения».",
         "kosell_not_configured": "Добавьте ключ KOSell в разделе «Подключения».",
         "provider_not_found": "Поставщик удалён. Выберите подключение заново.",

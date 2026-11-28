@@ -718,6 +718,8 @@ class Engine:
             )["n"],
             "orders": self.db.one("SELECT count(*) n FROM orders")["n"],
             "review": self.db.one("SELECT count(*) n FROM orders WHERE stage='review'")["n"],
-            "uncertain": self.db.one("SELECT count(*) n FROM outbox WHERE state='uncertain'")["n"],
+            "uncertain": self.db.one(
+                "SELECT count(*) n FROM outbox WHERE channel='playerok' AND state='uncertain'"
+            )["n"],
             "paused": self.db.get("paused"),
         }

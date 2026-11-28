@@ -7,6 +7,7 @@ import re
 import uuid
 
 from .external import STATE_NAMES, encoded
+from .listing_policy import auto_hide_external
 from .models import ServiceError, money, now, rub
 from .providers import PRESETS, amount, currency
 from .seller_ui import buttons
@@ -120,7 +121,14 @@ class ExternalUI:
         provider = self.engine.external.provider(binding["provider_id"])
         rid = self.db.one("SELECT rowid rid FROM bindings WHERE item_id=?", (item_id,))["rid"]
         keys = [
-            ("Снять паузу" if binding["paused"] else "Пауза", "lotflag:paused:" + item_id),
+            (
+                "▶️ Включить выдачу" if binding["paused"] else "⏸ Приостановить выдачу",
+                "lotflag:paused:" + item_id,
+            ),
+            (
+                "📦 Автоснятие: " + ("🟢 вкл" if auto_hide_external(self.db, item_id) else "⚪ выкл"),
+                f"x:visibility:{rid}",
+            ),
             ("👁 Предпросмотр выдачи", "preview:lot:" + item_id),
         ]
         for field, label in [
@@ -145,10 +153,39 @@ class ExternalUI:
             f"Количество: {binding['quantity']}\nУслуга: {binding['service_id'] or 'Stars'}\n"
             f"Лимит: {binding['max_native']} {binding['currency']} / {money(binding['max_cost'])}\n"
             f"Сайты: {', '.join(binding['domains']) or 'username Telegram'}\n"
-            f"Пауза: {'да' if binding['paused'] else 'нет'}\n"
-            f"Продажа: {issue_text(binding['hide_reason']) if binding['hide_reason'] else 'без ограничений бота'}",
-            reply_markup=buttons(keys),
+            f"Автовыдача: {'выключена' if binding['paused'] else 'включена'}\n"
+            f"Статус выдачи: {issue_text(binding['hide_reason']) if binding['hide_reason'] else 'настройки доступны'}\n\n"
+            + (
+                "📦 Бот управляет продажей по доступности поставщика."
+                if auto_hide_external(self.db, item_id)
+                else "🌐 Продажей управляете вы в Playerok. Пауза выдачи и сбой поставщика не снимают этот лот с продажи. Глобальная пауза магазина действует отдельно."
+            )
+            + (
+                "\nРанее бот отправлял снятие лота. Откройте его в Playerok и включите продажу, когда будете готовы."
+                if (binding["hidden_by_bot"] or self.db.get("visibility_intent:" + item_id) == "hide")
+                and not auto_hide_external(self.db, item_id)
+                else ""
+            ),
+            reply_markup=self.external_lot_keys(keys, item_id),
         )
+
+    def external_lot_keys(self, keys, item_id):
+        from aiogram.types import InlineKeyboardButton
+
+        markup = buttons(keys)
+        try:
+            safe_id = str(uuid.UUID(item_id))
+        except ValueError:
+            return markup
+        markup.inline_keyboard.insert(
+            0,
+            [
+                InlineKeyboardButton(
+                    text="🌐 Открыть лот в Playerok", url="https://playerok.com/products/" + safe_id
+                )
+            ],
+        )
+        return markup
 
     async def service_catalog(self, message, state, pid, page=0):
         context = await state.get_data()
@@ -259,6 +296,28 @@ class ExternalUI:
             )
         elif action == "provider":
             await self.provider_card(message, int(parts[2]))
+        elif action == "visibility":
+            row = self.db.one(
+                "SELECT item_id FROM bindings WHERE rowid=? AND fulfillment IN ('stars','smm')",
+                (int(parts[2]),),
+            )
+            if not row:
+                raise ValueError("Лот не найден")
+            item_id = row["item_id"]
+            if auto_hide_external(self.db, item_id):
+                self.db.set("external_auto_hide:" + item_id, False)
+                await self.external_lot(message, item_id)
+            else:
+                token = uuid.uuid4().hex[:12]
+                await state.update_data(
+                    external_confirm={"token": token, "kind": "visibility", "item": item_id}
+                )
+                await message.answer(
+                    "📦 Включить автоснятие лота?\n\nБот сможет снимать лот ещё до покупки: при выключенной выдаче, недоступной услуге, нехватке баланса или превышении лимита. После двух успешных проверок бот вернёт снятый им лот в продажу.\n\nГлобальная пауза магазина действует отдельно.",
+                    reply_markup=buttons(
+                        [("✅ Включить автоснятие", "x:confirm:" + token), ("‹ Назад", "lot:" + item_id)]
+                    ),
+                )
         elif action == "check":
             pid = int(parts[2])
             await message.answer("⏳ Обновляю баланс и каталог…")
@@ -416,7 +475,9 @@ class ExternalUI:
                     ),
                 )
             await state.clear()
-            await message.answer("✅ Лот сохранён\n\nВключите выдачу кнопкой «Снять паузу» в карточке лота.")
+            await message.answer(
+                "✅ Лот сохранён\n\nВключите выдачу в карточке лота. Автоснятие продажи выключено."
+            )
             await self.external_lot(message, wizard["item_id"])
         elif action == "lotedit":
             row = self.db.one("SELECT item_id FROM bindings WHERE rowid=?", (int(parts[2]),))
@@ -497,7 +558,15 @@ class ExternalUI:
             if confirmation.get("token") != parts[2]:
                 raise ValueError("Подтверждение устарело")
             await state.update_data(external_confirm=None)
-            if confirmation["kind"] == "launch":
+            if confirmation["kind"] == "visibility":
+                item_id = confirmation["item"]
+                row = self.db.one("SELECT fulfillment FROM bindings WHERE item_id=?", (item_id,))
+                if not row or row["fulfillment"] not in {"stars", "smm"}:
+                    raise ValueError("Лот не найден")
+                self.db.set("external_auto_hide:" + item_id, True)
+                self.db.audit("external_auto_hide_enabled", item_id)
+                await self.external_lot(message, item_id)
+            elif confirmation["kind"] == "launch":
                 provider = self.engine.external.provider(confirmation["provider"])
                 if (
                     provider["revision"] != confirmation["revision"]

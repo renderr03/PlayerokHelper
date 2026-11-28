@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/renderr03/PlayerokHelper/releases/tag/v0.6.3"><img src="https://img.shields.io/badge/Версия-0.6.3-39CDA4" alt="Версия 0.6.3"></a>
+  <a href="https://github.com/renderr03/PlayerokHelper/releases/tag/v0.6.4"><img src="https://img.shields.io/badge/Версия-0.6.4-39CDA4" alt="Версия 0.6.4"></a>
   <a href="https://github.com/renderr03/PlayerokHelper/actions/workflows/tests.yml"><img src="https://github.com/renderr03/PlayerokHelper/actions/workflows/tests.yml/badge.svg" alt="Проверки проекта"></a>
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&amp;logoColor=white" alt="Python 3.11 и новее">
   <img src="https://img.shields.io/badge/Размещение-свой_сервер-39CDA4" alt="Размещение на своём сервере">
@@ -32,6 +32,10 @@
 - **Всё в Telegram.** Настройки, заказы, сообщения покупателям и отчёты в одной панели.
 - **Ваш сервер и ваши настройки.** Токен бота и ключ шифрования хранятся в локальном `.env`; подключения из панели и складские данные — в зашифрованной базе.
 - **Установка одной командой.** Консоль спросит токен и ID администратора, затем настроит запуск в фоне и после перезагрузки.
+
+## 0.6.4: SMM без неожиданного снятия продажи
+
+Stars/SMM больше не управляют видимостью объявления при обычной настройке: автоснятие выключено по умолчанию и включается отдельно с подтверждением. Пауза выдачи сохраняет объявление; глобальная пауза магазина действует отдельно. [Исправление и восстановление лота](docs/releases/v0.6.4.md).
 
 ## 0.6.3: меню и навигация
 

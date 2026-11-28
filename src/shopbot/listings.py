@@ -7,6 +7,7 @@ from datetime import datetime
 from .alerts import Alerts
 from .checks import recovery_item
 from .engine import Engine
+from .listing_policy import EXTERNAL_MODES, auto_hide_external, safe_reason
 from .margins import record
 from .models import ServiceError, money, now, rub
 from .ui_texts import issue_text
@@ -21,12 +22,14 @@ class Listings:
     async def availability(self, binding, products, balance, quotes=None):
         if self.db.get("paused") or binding["paused"]:
             return "manual_pause"
-        if binding.get("fulfillment") in {"stars", "smm"}:
+        if binding.get("fulfillment") in EXTERNAL_MODES:
             try:
                 await self.engine.external.preview(self.engine.external.binding(binding["item_id"]))
                 return None
-            except (ServiceError, ValueError, KeyError, TypeError, ArithmeticError):
-                return "external_provider_not_ready"
+            except ServiceError as error:
+                return safe_reason(error.code)
+            except (ValueError, KeyError, TypeError, ArithmeticError):
+                return "external_provider_invalid_response"
         if binding.get("fulfillment") == "own_rent":
             count = self.db.one(
                 "SELECT count(*) n FROM own_accounts WHERE item_id=? AND state='free'", (binding["item_id"],)
@@ -113,6 +116,17 @@ class Listings:
                 except (ServiceError, KeyError, ValueError, TypeError, ArithmeticError):
                     reason = "quote_unavailable"
                 item_id = binding["item_id"]
+                external = binding.get("fulfillment") in EXTERNAL_MODES
+                auto_hide = auto_hide_external(self.db, item_id)
+                may_hide = not external or auto_hide or self.db.get("paused")
+                global_hide = self.db.get("global_hide:" + item_id, False)
+                may_restore = not external or auto_hide or global_hide
+                if not may_hide and not may_restore:
+                    self.db.execute(
+                        "UPDATE bindings SET healthy_count=?,hide_reason=? WHERE item_id=?",
+                        (0 if reason else binding["healthy_count"] + 1, reason, item_id),
+                    )
+                    continue
                 try:
                     item = await self.engine.market.item(item_id)
                     record(self.engine, binding, item, quotes)
@@ -128,16 +142,24 @@ class Listings:
                         # A restore may have completed just before a crash; do not repeat it.
                         self.db.execute("UPDATE bindings SET hidden_by_bot=0 WHERE item_id=?", (item_id,))
                         binding["hidden_by_bot"] = 0
+                        self.db.set("global_hide:" + item_id, False)
                     if reason:
                         self.db.execute(
                             "UPDATE bindings SET healthy_count=0,hide_reason=? WHERE item_id=?",
                             (reason, item_id),
                         )
+                        if not may_hide:
+                            continue
                         if item["status"] == "APPROVED":
                             # Commit intent before remote mutation. A crash is reconciled
                             # against item state on the next pass, without republishing.
                             self.db.set("visibility_intent:" + item_id, "hide")
+                            hide_event = {"reason": reason, "at": now(), "confirmed": False}
+                            self.db.set("last_auto_hide:" + item_id, hide_event)
+                            if external and self.db.get("paused"):
+                                self.db.set("global_hide:" + item_id, True)
                             await self.engine.market.set_visible(item_id, False)
+                            self.db.set("last_auto_hide:" + item_id, {**hide_event, "confirmed": True})
                             self.db.execute("UPDATE bindings SET hidden_by_bot=1 WHERE item_id=?", (item_id,))
                             self.db.set("visibility_intent:" + item_id, None)
                             self.db.notify(
@@ -157,9 +179,10 @@ class Listings:
                         "UPDATE bindings SET healthy_count=?,hide_reason=NULL WHERE item_id=?",
                         (healthy, item_id),
                     )
-                    if binding["hidden_by_bot"] and healthy >= 2:
+                    if binding["hidden_by_bot"] and healthy >= 2 and may_restore:
                         await self.engine.market.set_visible(item_id, True)
                         self.db.execute("UPDATE bindings SET hidden_by_bot=0 WHERE item_id=?", (item_id,))
+                        self.db.set("global_hide:" + item_id, False)
                         self.db.notify(f"Лот {item_id} снова доступен", f"restore:{item_id}:{int(now())}")
                         continue
                     if self.db.get("paused"):

@@ -219,6 +219,8 @@ class External:
                         catalog = await client.services() if client.kind == "smm" else []
                 else:
                     balances, catalog = await self.check(provider["id"])
+            if binding["currency"] not in balances:
+                raise ServiceError("provider_currency_mismatch")
             if provider["preset"] != "split":
                 service = next(
                     (s for s in catalog if s["id"] == binding["service_id"]),

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import platform
 import re
 import shutil
@@ -64,6 +65,45 @@ def connection_diagnostics(db):
 
 
 def workflow_diagnostics(db):
+    from .listing_policy import EXTERNAL_MODES, auto_hide_external, safe_reason
+
+    lots = []
+    for row in db.all(
+        "SELECT item_id,module,fulfillment,paused,hidden_by_bot,hide_reason FROM bindings LIMIT 200"
+    ):
+        # Only identifiers and enums; titles, instructions and keys are private.
+        if not re.fullmatch(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", row["item_id"]):
+            continue
+        mode = row["fulfillment"] or row["module"]
+        if mode not in {"stock", "kosell", "extend", "own_rent", "own_extend", "stars", "smm"}:
+            continue
+        event = db.get("last_auto_hide:" + row["item_id"])
+        last_hide = None
+        if (
+            isinstance(event, dict)
+            and type(event.get("at")) in (int, float)
+            and math.isfinite(event["at"])
+            and 0 < event["at"] < 100_000_000_000
+        ):
+            last_hide = {
+                "reason": safe_reason(event.get("reason")),
+                "at": event["at"],
+                "confirmed": event.get("confirmed") is True,
+            }
+        lots.append(
+            {
+                "item_id": row["item_id"],
+                "mode": mode,
+                "delivery_paused": bool(row["paused"]),
+                "hidden_by_bot": bool(row["hidden_by_bot"]),
+                "availability_reason": safe_reason(row["hide_reason"]),
+                "external_auto_hide": auto_hide_external(db, row["item_id"])
+                if mode in EXTERNAL_MODES
+                else None,
+                "hide_intent": db.get("visibility_intent:" + row["item_id"]) == "hide",
+                "last_auto_hide": last_hide,
+            }
+        )
     pending = db.get("visibility_test_pending")
     phase = pending.get("phase", "legacy") if isinstance(pending, dict) else None
     phases = {"legacy", "hide_requested", "hide_verified", "restore_requested", "restore_rejected"}
@@ -121,6 +161,7 @@ def workflow_diagnostics(db):
     ):
         safe_error = error
     return {
+        "lots": lots,
         "visibility": {
             "pending": bool(pending),
             "last_error": safe_error,
